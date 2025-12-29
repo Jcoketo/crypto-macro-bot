@@ -1,0 +1,7 @@
+body{font-family:Inter,system-ui,Arial; background:#f7f8fb; color:#111}
+.container{max-width:960px;margin:24px auto;padding:20px;background:#fff;border-radius:8px;box-shadow:0 4px 16px rgba(12,15,20,0.06)}
+h1{margin:0 0 12px}
+.card{padding:12px;background:#f3f6fb;border-radius:6px}
+table{width:100%;border-collapse:collapse}
+td{padding:6px;border-bottom:1px solid #eee}
+.charts{display:flex;flex-direction:column;gap:18px}
