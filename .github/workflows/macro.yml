@@ -2,7 +2,7 @@ name: Daily Bot
 
 on:
   schedule:
-    - cron: "0 0 * * *"  # 00:00 UTC (una vez por día)
+    - cron: "0 0 * * *"   # 00:00 UTC = 21:00 Argentina (ejecuta 1 vez/día)
   workflow_dispatch:
 
 jobs:
@@ -21,9 +21,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Ejecutar bot
+      - name: Ejecutar main.py
         env:
           SHEETBEST_URL: ${{ secrets.SHEETBEST_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python bot.py
+        run: python main.py
