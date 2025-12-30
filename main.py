@@ -1,468 +1,270 @@
 #!/usr/bin/env python3
-# GitHub Actions (cron diario)
+# Bot macro cripto v2.2-macro
+# Diseñado para correr 1 vez por día (00:00 UTC) vía GitHub Actions
 
 import requests
 from datetime import datetime, timezone
 import os
 import math
-import sys
 
-# -----------------------
-# CONFIG 
-# -----------------------
+# =======================
+# CONFIGURACIÓN
+# =======================
+
+SHEETBEST_URL = os.getenv("SHEETBEST_URL")
+
+COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+
+STABLE_ALIASES = [
+    "usdt", "tether", "usd-coin", "usdc", "dai", "busd",
+    "binance-usd", "tusd", "true-usd", "frax"
+]
+
+# Umbrales macro
 TH_DEFENSIVO = 30
 TH_TRANS_BAJISTA = 45
 TH_NEUTRO = 55
 TH_TRANS_ALCISTA = 70
 
 PERSIST_MIN = 3
-SMA_CORTA = 7
-SMA_LARGA = 21
 HIST_LIMIT = 60
 
-SHEETBEST_URL = os.getenv("SHEETBEST_URL")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+MODEL_VERSION = "v2.2-macro"
 
-COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
-COINGECKO_SIMPLE = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
+# =======================
+# HELPERS
+# =======================
 
-STABLE_ALIASES = ["usdt", "tether", "usd-coin", "usdc", "dai", "busd", "binance-usd", "tusd", "true-usd", "frax"]
-MODEL_VERSION = "v2.1-anticipation"
-
-# -----------------------
-# Helpers
-# -----------------------
 def parse_float(x):
-    if x is None:
+    if x is None or x == "":
         return None
-    if isinstance(x, (int, float)):
-        return float(x)
-    s = str(x).strip()
-    if s == "":
-        return None
-    s = s.replace("%", "").replace(",", ".")
     try:
-        return float(s)
+        return float(str(x).replace(",", ".").replace("%", ""))
     except:
-        try:
-            return float(s.replace(" ", ""))
-        except:
-            return None
-
-def safe_get(url, timeout=12):
-    r = requests.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r
-
-# -----------------------
-# Data sources
-# -----------------------
-def obtener_datos_globales():
-    try:
-        r = safe_get(COINGECKO_GLOBAL)
-        return r.json()["data"]
-    except Exception as e:
-        print("Error obteniendo CoinGecko global:", e)
-        raise
-
-def obtener_btc_24h_change():
-    try:
-        r = safe_get(COINGECKO_SIMPLE)
-        j = r.json()
-        # estructura: { "bitcoin": { "usd": 47000, "usd_24h_change": 1.234 } }
-        b = j.get("bitcoin", {})
-        change = b.get("usd_24h_change")
-        return parse_float(change)
-    except Exception as e:
-        print("Warning: no se pudo obtener btc 24h change:", e)
         return None
 
-def calcular_dominancia_stable_de_market_pct(market_pct):
-    total = 0.0
-    if not isinstance(market_pct, dict):
+def zscore(actual, historico, window=14):
+    vals = [v for v in historico if v is not None]
+    if len(vals) < window:
         return 0.0
-    for alias in STABLE_ALIASES:
-        v = market_pct.get(alias)
-        if v is None:
-            v = market_pct.get(alias.upper())
-        if v is not None:
-            try:
-                total += float(v)
-            except:
-                pass
-    return total
+    sub = vals[-window:]
+    mean = sum(sub) / len(sub)
+    var = sum((x - mean)**2 for x in sub) / len(sub)
+    std = math.sqrt(var) if var > 0 else 0
+    if std == 0:
+        return 0.0
+    return (actual - mean) / std
 
-# -----------------------
-# Sheet.best reading
-# -----------------------
-def leer_historico(limit=HIST_LIMIT):
-    if not SHEETBEST_URL:
-        print("ERROR: SHEETBEST_URL no definida.")
-        return []
-    try:
-        r = safe_get(SHEETBEST_URL)
-        data = r.json()
-        if not isinstance(data, list):
-            print("Respuesta Sheet.best no es lista JSON:", data)
-            return []
-        rows = data[-limit:]
-        historico = []
-        for row in rows:
-            historico.append({
-                "fecha": row.get("fecha"),
-                "total_market_cap": parse_float(row.get("total_market_cap")),
-                "dominancia_btc": parse_float(row.get("dominancia_btc") or row.get("dominancia_bitcoin")),
-                "dominancia_stable": parse_float(row.get("dominancia_stable") or row.get("dominancia_stablecoins")),
-                "variacion_24h": parse_float(row.get("variacion_24h") or row.get("variacion_stablecoins_pct")),
-                "aceleracion": parse_float(row.get("aceleracion") or row.get("aceleracion_stablecoins")),
-                "sma_7": parse_float(row.get("sma_7")),
-                "sma_21": parse_float(row.get("sma_21")),
-                "score_diario": parse_float(row.get("score_diario") or row.get("score_macro")),
-                "score_semanal": parse_float(row.get("score_semanal") or row.get("weekly_score")),
-                "persistencia_bajista": int(parse_float(row.get("persistencia_bajista") or 0)) if row.get("persistencia_bajista") not in (None,"") else 0,
-                "persistencia_alcista": int(parse_float(row.get("persistencia_alcista") or 0)) if row.get("persistencia_alcista") not in (None,"") else 0,
-                "estado_dinamico": row.get("estado_dinamico"),
-                "regimen_macro": row.get("regimen_macro") or row.get("regimen"),
-                "interpretacion": row.get("interpretacion"),
-                "alerta": row.get("alerta") or ""
-            })
-        return historico
-    except Exception as e:
-        print("Error leyendo Sheet.best:", e)
-        return []
-
-# -----------------------
-# Estadísticos
-# -----------------------
-def sma(lista, n):
-    vals = [v for v in lista if v is not None]
+def sma(values, n):
+    vals = [v for v in values if v is not None]
     if len(vals) < n:
         return None
     return sum(vals[-n:]) / n
 
-# -----------------------
-# Score y patrón adelantado
-# -----------------------
-def calcular_score_base(dom_stable, variacion_pct, aceleracion, dom_btc):
+# =======================
+# COINGECKO
+# =======================
+
+def obtener_datos_globales():
+    r = requests.get(COINGECKO_GLOBAL, timeout=15)
+    r.raise_for_status()
+    return r.json()["data"]
+
+def calcular_dominancia_stable(market_pct):
+    total = 0.0
+    for a in STABLE_ALIASES:
+        if a in market_pct:
+            total += float(market_pct[a])
+    return total
+
+# =======================
+# HISTÓRICO
+# =======================
+
+def leer_historico():
+    if not SHEETBEST_URL:
+        return []
+    r = requests.get(SHEETBEST_URL, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    rows = data[-HIST_LIMIT:]
+    hist = []
+    for r in rows:
+        hist.append({
+            "dominancia_stable": parse_float(r.get("dominancia_stable")),
+            "variacion_24h": parse_float(r.get("variacion_24h")),
+            "aceleracion": parse_float(r.get("aceleracion")),
+            "score_diario": parse_float(r.get("score_diario")),
+            "regimen_macro": r.get("regimen_macro")
+        })
+    return hist
+
+# =======================
+# SCORE BASE
+# =======================
+
+def calcular_score_base(dom_stable, dom_btc):
     score = 50
-    if dom_stable is None:
-        dom_stable = 0
     if dom_stable > 12:
         score += 20
     elif dom_stable < 9:
         score -= 20
-    if variacion_pct is None:
-        variacion_pct = 0
-    if variacion_pct >= 5:
-        score += 15
-    elif variacion_pct <= -5:
-        score -= 15
-    elif variacion_pct >= 3:
-        score += 8
-    elif variacion_pct <= -3:
-        score -= 8
-    if aceleracion is None:
-        aceleracion = 0
-    if aceleracion >= 1.5:
-        score += 10
-    elif aceleracion <= -1.5:
-        score -= 10
-    if dom_btc is None:
-        dom_btc = 0
+
     if dom_btc > 46:
         score += 5
     elif dom_btc < 42:
         score -= 5
-    return max(0, min(100, int(round(score))))
 
-def calcular_presion_defensiva(dom_stable_change, aceleracion, pendiente_7d, divergence_flag, persistencia_bajista):
-    """
-    Ponderaciones (ajustables):
-      - dom_stable_change (velocidad) -> 25
-      - aceleracion -> 20
-      - pendiente_7d -> 20
-      - divergence_flag (0/1) -> 20
-      - persistencia_bajista (0-5 cap) -> 15 (normalizada)
-    Resultado en 0-100, donde mayor = más presión defensiva (riesgo de baja).
-    """
-    # normalizaciones sencillas (estas pueden afinarse con backtest)
-    # dom_stable_change en puntos porcentuales (ej. +1.5 -> 1.5)
-    x_dom = max(min(dom_stable_change, 10), -10)  # cap
-    # convertimos a 0-100 contribution (asumimos 0..5pp relevante)
-    dom_score = (max(x_dom, 0) / 5.0) * 25  # si x_dom=5 => 25 pts
+    return max(0, min(100, score))
 
-    x_acc = max(min(aceleracion, 5), -5)
-    acc_score = (max(x_acc, 0) / 3.0) * 20  # si accel=3 => 20 pts
+# =======================
+# PRESIÓN DEFENSIVA (ANTICIPACIÓN)
+# =======================
 
-    x_pend = max(min(pendiente_7d, 10), -10)
-    pend_score = (max(x_pend, 0) / 7.0) * 20  # si pend=7 => 20 pts
+def calcular_presion_defensiva(z_var, z_acc, pendiente_7d, divergence, regimen):
+    presion = 50
 
-    div_score = 20 if divergence_flag else 0
+    # Flujo estable anormal
+    if z_var > 1.5:
+        presion += 30
+    elif z_var > 0.8:
+        presion += 20
+    elif z_var < -1.5:
+        presion -= 15
+    elif z_var < -0.8:
+        presion -= 5
 
-    persist_norm = max(min(persistencia_bajista, 5), 0)
-    persist_score = (persist_norm / 5.0) * 15
+    # Aceleración
+    if z_acc > 1.2:
+        presion += 15
+    elif z_acc < -1.2:
+        presion -= 10
 
-    raw = dom_score + acc_score + pend_score + div_score + persist_score
-    presion = int(round(max(0, min(100, raw))))
-    return presion
+    # Tendencia estructural
+    if pendiente_7d > 0:
+        presion += 10
+    elif pendiente_7d < 0:
+        presion -= 5
 
-def riesgo_probabilidades_from_presion(presion):
-    """
-    Mapear presión defensiva a probabilidades:
-    - presion 0-30 -> baja probabilidad bajista
-    - 31-50 -> moderada
-    - 51-70 -> alta
-    - 71-100 -> muy alta
-    Devuelve prob_bajista_7d (%) y prob_alcista_7d (%)
-    """
-    if presion <= 30:
-        p_baj = 10 + presion * 0.8  # 10..34
-    elif presion <= 50:
-        p_baj = 35 + (presion - 30) * 1.2  # 35..59
-    elif presion <= 70:
-        p_baj = 60 + (presion - 50) * 1.0  # 60..80
-    else:
-        p_baj = 81 + (presion - 70) * 1.9  # 81..100 approx
+    # Divergencia precio/flujo
+    if divergence:
+        presion += 15
 
-    p_baj = max(0, min(100, p_baj))
-    # prob_alcista inversa con piso
-    p_alc = max(0, min(100, 100 - p_baj))
-    return int(round(p_baj)), int(round(p_alc))
+    # Filtro anti-rebote (clave 2026)
+    if regimen in ["DEFENSIVO", "TRANSICION BAJISTA"]:
+        if z_var < 0 and z_acc < 0:
+            presion += 10
 
-# -----------------------
-# Motor de interpretacion anticipada
-# -----------------------
-def interpretar_anticipado(presion, prob_baj, prob_alc, divergence_flag, regimen_macro):
-    lines = []
-    if divergence_flag:
-        lines.append("Divergencia precio/flujo detectada: precio no confirma flujo (señal adelantada de riesgo).")
-    if presion >= 71:
-        lines.append(f"ALERTA anticipada: presión defensiva alta ({presion}). Prob. bajista 7d ≈ {prob_baj}%. Considerar reducción de exposición.")
-    elif presion >= 51:
-        lines.append(f"Precaución: presión defensiva significativa ({presion}). Prob. bajista 7d ≈ {prob_baj}%. Evitar entradas agresivas.")
-    elif presion >= 31:
-        lines.append(f"Atención: presión moderada ({presion}). Prob. bajista 7d ≈ {prob_baj}%. Monitorizar persistencia.")
-    else:
-        lines.append(f"Baja presión defensiva ({presion}). Prob. bajista 7d ≈ {prob_baj}%.")
-    # añadir contexto del régimen macro ya calculado
-    lines.append(f"Regimen macro actual: {regimen_macro}.")
-    # síntesis final
-    if prob_baj > 70:
-        lines.append("Estrategia sugerida: priorizar capital preservación y evitar aumentar riesgo hasta confirmación semanal.")
-    elif prob_alc > 70:
-        lines.append("Estrategia sugerida: entorno favorable para acumulación progresiva con gestión de riesgo.")
-    else:
-        lines.append("Estrategia sugerida: mantener vigilancia; usar confirmación semanal para decisiones mayores.")
-    return " ".join(lines)
+    return max(0, min(100, int(round(presion))))
 
-# -----------------------
-# Main: análisis + publicación
-# -----------------------
-def analizar_y_guardar():
-    # 1) obtener datos
-    try:
-        cg = obtener_datos_globales()
-    except Exception as e:
-        print("Fallo al obtener global data:", e)
-        return
+# =======================
+# MAIN
+# =======================
 
-    total_mcap = parse_float(cg.get("total_market_cap", {}).get("usd"))
-    market_pct = cg.get("market_cap_percentage", {}) or {}
-    dominancia_btc = parse_float(market_pct.get("btc"))
-    dominancia_stable = calcular_dominancia_stable_de_market_pct(market_pct)
+def main():
+    cg = obtener_datos_globales()
 
-    btc_price_change_24h = obtener_btc_24h_change()  # en %
-    # si no está disponible, se usa None
+    total_mcap = parse_float(cg["total_market_cap"]["usd"])
+    market_pct = cg["market_cap_percentage"]
 
-    # 2) leer historico
-    historico = leer_historico(limit=HIST_LIMIT)
+    dom_btc = parse_float(market_pct.get("btc"))
+    dom_stable = calcular_dominancia_stable(market_pct)
 
-    # 3) calcular variacion y aceleracion
-    variacion_pct = 0.0
-    if historico and len(historico) >= 1:
-        prev_dom = historico[-1].get("dominancia_stable")
-        if prev_dom and prev_dom != 0:
-            variacion_pct = ((dominancia_stable - prev_dom) / prev_dom) * 100
-    aceleracion = 0.0
-    if historico and len(historico) >= 2:
-        prev_var = historico[-1].get("variacion_24h") or 0.0
-        try:
-            aceleracion = variacion_pct - float(prev_var)
-        except:
-            aceleracion = variacion_pct
+    historico = leer_historico()
 
-    # 4) SMA y pendiente 7d
-    doms = [r.get("dominancia_stable") for r in historico if r.get("dominancia_stable") is not None]
-    doms_for_sma = doms + [dominancia_stable]
-    sma7 = sma(doms_for_sma, SMA_CORTA)
-    sma21 = sma(doms_for_sma, SMA_LARGA)
-    pendiente_7d = 0.0
-    if len(doms_for_sma) >= 7:
-        try:
-            pendiente_7d = dominancia_stable - doms_for_sma[-7]
-        except:
-            pendiente_7d = 0.0
+    # Variación 24h
+    prev_dom = historico[-1]["dominancia_stable"] if historico else None
+    variacion = ((dom_stable - prev_dom) / prev_dom * 100) if prev_dom else 0.0
 
-    # 5) score base y persistencias
-    score_diario = calcular_score_base(dominancia_stable, variacion_pct, aceleracion, dominancia_btc)
-    scores_hist = [r.get("score_diario") for r in historico if r.get("score_diario") is not None]
-    scores_hist = [float(x) for x in scores_hist]
-    scores_hist.append(float(score_diario))
-    last5 = scores_hist[-5:] if len(scores_hist) >= 1 else [score_diario]
-    persistencia_bajista = sum(1 for s in last5 if s < TH_DEFENSIVO)
-    persistencia_alcista = sum(1 for s in last5 if s > TH_TRANS_ALCISTA)
+    # Aceleración
+    prev_var = historico[-1]["variacion_24h"] if len(historico) > 1 else 0.0
+    aceleracion = variacion - (prev_var or 0)
 
-    weekly_score = calcular_weekly_score_con_registros(historico, score_diario)
+    # Tendencias
+    dom_series = [r["dominancia_stable"] for r in historico if r["dominancia_stable"]]
+    dom_series.append(dom_stable)
 
-    regimen_macro = "NEUTRO"
-    if weekly_score is None:
-        weekly_score = score_diario
-    if weekly_score < TH_DEFENSIVO and persistencia_bajista >= PERSIST_MIN:
-        regimen_macro = "DEFENSIVO"
+    sma7 = sma(dom_series, 7)
+    sma21 = sma(dom_series, 21)
+    pendiente_7d = dom_stable - dom_series[-7] if len(dom_series) >= 7 else 0
+
+    # Normalización
+    z_var = zscore(variacion, [r["variacion_24h"] for r in historico])
+    z_acc = zscore(aceleracion, [r["aceleracion"] for r in historico])
+
+    # Score base
+    score_base = calcular_score_base(dom_stable, dom_btc)
+
+    # Persistencia
+    scores = [r["score_diario"] for r in historico if r["score_diario"] is not None]
+    scores.append(score_base)
+    last5 = scores[-5:]
+
+    persist_baj = sum(1 for s in last5 if s < TH_DEFENSIVO)
+    persist_alc = sum(1 for s in last5 if s > TH_TRANS_ALCISTA)
+
+    # Régimen macro
+    weekly_score = int(sum(last5) / len(last5))
+
+    if weekly_score < TH_DEFENSIVO and persist_baj >= PERSIST_MIN:
+        regimen = "DEFENSIVO"
     elif weekly_score < TH_TRANS_BAJISTA:
-        regimen_macro = "TRANSICION BAJISTA"
+        regimen = "TRANSICION BAJISTA"
     elif weekly_score <= TH_NEUTRO:
-        regimen_macro = "NEUTRO"
+        regimen = "NEUTRO"
     elif weekly_score <= TH_TRANS_ALCISTA:
-        regimen_macro = "TRANSICION ALCISTA"
+        regimen = "TRANSICION ALCISTA"
     else:
-        regimen_macro = "RISK-ON"
+        regimen = "RISK-ON"
 
-    # 6) Divergencia precio/flujo
-    divergence_flag = False
-    # definimos umbral de "divergencia relevante": precio sube >0.5% mientras stable sube >+0.5pp (o precio sube y stables suben)
-    if btc_price_change_24h is not None:
-        # criterio: signo opuesto entre precio y flujo: precio up (>+0.5) AND stable up (>+0.5) -> distribution (bearish divergence)
-        if btc_price_change_24h > 0.5 and variacion_pct > 0.5:
-            divergence_flag = True
-        # también si precio modestamente sube y stable sube mucho
-        if btc_price_change_24h > 0 and variacion_pct > 1.5:
-            divergence_flag = True
-        # pauta inversa (confirmación risk-on)
-        # (we leave divergence_flag False if not matching above)
-    else:
-        divergence_flag = False
+    # Divergencia (placeholder conservador)
+    divergence = z_var > 1.0
 
-    # 7) presion defensiva y probabilidades
-    presion_def = calcular_presion_defensiva(variacion_pct, aceleracion, pendiente_7d, divergence_flag, persistencia_bajista)
-    prob_baj, prob_alc = riesgo_probabilidades_from_presion(presion_def)
+    # Presión defensiva
+    presion_def = calcular_presion_defensiva(
+        z_var, z_acc, pendiente_7d, divergence, regimen
+    )
 
-    # 8) interpretacion anticipada
-    interpretacion_anticipada = interpretar_anticipado(presion_def, prob_baj, prob_alc, divergence_flag, regimen_macro)
+    # Probabilidades
+    prob_baj = min(100, presion_def + (10 if regimen in ["DEFENSIVO", "TRANSICION BAJISTA"] else 0))
+    prob_alc = max(0, 100 - prob_baj)
 
-    # 9) construir payload
-    fecha_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Interpretación anticipada
+    interpretacion = (
+        "Alta presión defensiva anticipada. "
+        "Históricamente este patrón precede fases bajistas o alta volatilidad."
+        if prob_baj > 65 else
+        "Mercado en transición. Confirmación pendiente."
+        if prob_baj > 45 else
+        "Presión defensiva baja. Contexto favorable con cautela."
+    )
+
     payload = {
-        "fecha": fecha_iso,
-        "total_market_cap": int(round(total_mcap)) if total_mcap is not None else "",
-        "dominancia_btc": round(dominancia_btc, 2) if dominancia_btc is not None else "",
-        "dominancia_stable": round(dominancia_stable, 2) if dominancia_stable is not None else "",
-        "variacion_24h": round(variacion_pct, 2),
+        "fecha": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "total_market_cap": int(total_mcap),
+        "dominancia_btc": round(dom_btc, 2),
+        "dominancia_stable": round(dom_stable, 2),
+        "variacion_24h": round(variacion, 2),
         "aceleracion": round(aceleracion, 2),
         "pendiente_7d": round(pendiente_7d, 2),
-        "sma_7": round(sma7, 2) if sma7 is not None else "",
-        "sma_21": round(sma21, 2) if sma21 is not None else "",
-        "score_diario": int(score_diario),
-        "score_semanal": int(weekly_score) if weekly_score is not None else "",
-        "persistencia_bajista": int(persistencia_bajista),
-        "persistencia_alcista": int(persistencia_alcista),
-        "estado_dinamico": "NEUTRO" if not payload else "",  # placeholder updated below
-        "regimen_macro": regimen_macro,
-        "interpretacion": interpretacion_anticipada,
-        "divergencia_precio_flujo": "TRUE" if divergence_flag else "FALSE",
-        "presion_defensiva": int(presion_def),
-        "prob_bajista_7d": int(prob_baj),
-        "prob_alcista_7d": int(prob_alc),
-        "interpretacion_anticipada": interpretacion_anticipada,
-        "alerta": "",
-        "comentario_manual": "",
+        "sma_7": round(sma7, 2) if sma7 else "",
+        "sma_21": round(sma21, 2) if sma21 else "",
+        "score_diario": score_base,
+        "score_semanal": weekly_score,
+        "persistencia_bajista": persist_baj,
+        "persistencia_alcista": persist_alc,
+        "presion_defensiva": presion_def,
+        "probabilidad_bajista_7d": prob_baj,
+        "probabilidad_alcista_7d": prob_alc,
+        "regimen_macro": regimen,
+        "interpretacion": interpretacion,
         "version_modelo": MODEL_VERSION
     }
 
-    # fix estado_dinamico properly (recompute text)
-    estado_dinamico = "NEUTRO"
-    if variacion_pct > 0 and aceleracion > 0:
-        estado_dinamico = "CAMBIO FUERTE"
-    elif variacion_pct < 0 and aceleracion > 0:
-        estado_dinamico = "FRENO DE CAIDA"
-    elif variacion_pct < 0 and aceleracion < 0:
-        estado_dinamico = "PANICO"
-    elif variacion_pct > 0 and aceleracion < 0:
-        estado_dinamico = "AGOTAMIENTO"
-    payload["estado_dinamico"] = estado_dinamico
+    requests.post(SHEETBEST_URL, json=payload, timeout=15)
 
-    # 10) alertas (si corresponde)
-    alerta_text = ""
-    send_alert = False
-    if score_diario >= 81:
-        alerta_text = f"ALERTA: Score {score_diario} (RISK-OFF). {interpretacion_anticipada}"
-        send_alert = True
-    elif score_diario <= 20:
-        alerta_text = f"ALERTA: Score {score_diario} (RISK-ON FUERTE). {interpretacion_anticipada}"
-        send_alert = True
-    if historico and len(historico) >= 1:
-        last_reg = historico[-1].get("regimen_macro") or historico[-1].get("regimen")
-        if last_reg and last_reg != regimen_macro:
-            alerta_text = f"CAMBIO DE RÉGIMEN: {last_reg} → {regimen_macro}. Score: {score_diario}"
-            send_alert = True
-    if weekly_score is not None and weekly_score >= 81:
-        alerta_text = f"ALERTA SEMANAL: weekly_score {weekly_score} indica stress sostenido."
-        send_alert = True
-
-    if send_alert:
-        payload["alerta"] = alerta_text
-
-    # 11) evitar duplicados: si ya existe registro con fecha_iso en últimas filas => skip posting
-    try:
-        if SHEETBEST_URL:
-            r_check = safe_get(SHEETBEST_URL)
-            data_check = r_check.json()
-            last = data_check[-5:] if len(data_check) >= 5 else data_check
-            today_found = any(str(row.get("fecha","")).startswith(fecha_iso) for row in last)
-            if today_found:
-                print("Registro para la fecha ya existe. No se añade duplicado. (fecha:", fecha_iso, ")")
-                # aún así podemos actualizar alerta localmente; por ahora omitimos POST
-                # si preferís actualizar la fila, habría que usar otra API o commitear CSV
-            else:
-                # POST
-                rpost = requests.post(SHEETBEST_URL, json=payload, timeout=15)
-                try:
-                    rpost.raise_for_status()
-                    print("✅ Registro subido a Sheet.best")
-                except Exception as e:
-                    print("Error subiendo a Sheet.best:", e)
-                    try:
-                        print("Respuesta:", rpost.text)
-                    except:
-                        pass
-        else:
-            print("SHEETBEST_URL no configurado. Imprimiendo payload para revisión:")
-            print(payload)
-    except Exception as e:
-        print("Error comprobando duplicado o subiendo:", e)
-
-    # 12) Telegram si corresponde
-    if send_alert and alerta_text:
-        if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-            try:
-                tg_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-                data = {"chat_id": TELEGRAM_CHAT_ID, "text": alerta_text, "parse_mode": "HTML"}
-                rt = requests.post(tg_url, json=data, timeout=10)
-                rt.raise_for_status()
-                print("✅ Alerta enviada por Telegram")
-            except Exception as e:
-                print("Error enviando Telegram:", e)
-        else:
-            print("Telegram no configurado (omitido).")
-
-    # 13) resumir en consola
-    print("\n--- Resumen ---")
-    keys = ["fecha","dominancia_stable","variacion_24h","aceleracion","presion_defensiva","prob_bajista_7d","prob_alcista_7d","score_diario","score_semanal","regimen_macro"]
-    for k in keys:
-        print(f"{k}: {payload.get(k)}")
-    print("interpretacion_anticipada:", payload.get("interpretacion_anticipada"))
-    print("---------------\n")
+    print("✅ v2.2 ejecutado")
+    print(regimen, "| Presión:", presion_def, "| Prob bajista:", prob_baj)
 
 if __name__ == "__main__":
-    analizar_y_guardar()
+    main()
