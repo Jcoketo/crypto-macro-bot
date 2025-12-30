@@ -27,4 +27,4 @@ jobs:
           SHEETBEST_URL: ${{ secrets.SHEETBEST_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python cambioTendenciaStable.py
+        run: python cambioTendencias.py
