@@ -87,8 +87,9 @@ El bot escribe las columnas siguientes (nombres exactos recomendados):
 * **Invalidación Alcista:** dominancia_stable sube y presion_def vuelve a >55.
 
 ## 🧮 **Matriz de Decisión Operativa**
+
 | Regimen          | Score Semanal    |      Acción sugerida      |
-| ----------------------------------- | ------------------------- |
+| ---------------- | ---------------: | ------------------------: |
 | DEFENSIVO        |       < 30       |  VENDER PARCIAL / VENDER  |
 | TRANS. BAJISTA   |      30 - 45     |         OBSERVAR          |           
 | NEUTRO           |      45 - 55     |         MANTENER          |             
