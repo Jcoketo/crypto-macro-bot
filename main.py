@@ -544,19 +544,63 @@ def send_telegram(text):
 
 def telegram_summary(payload, last_action=None, last_escenario=None):
     lines = []
-    lines.append(f"📊 <b>Macro {MODEL_VERSION} - {payload.get('fecha')}</b>")
-    lines.append(f"Escenario probable: <b>{payload.get('escenario_probable')}</b> (bull {payload.get('prob_bull_pct')}% / neutral {payload.get('prob_neutral_pct')}% / bear {payload.get('prob_bear_pct')}%)")
-    lines.append(f"Presion defensiva: {payload.get('presion_defensiva')} | Domin. stable: {payload.get('dominancia_stable')}%")
-    lines.append(f"Acción sugerida: <b>{payload.get('accion_sugerida')}</b> | Exposición: {payload.get('exposicion_recomendada')}")
-    lines.append(f"Stop probable: {payload.get('stop_loss_probable')} | TP probable: {payload.get('take_profit_probable')}")
+
+    lines.append(f"📰 <b>NOTICIAS PARA {payload.get('fecha')}</b>")
+    lines.append("")
+
+    lines.append(
+        f"Escenario probable: <b>{payload.get('escenario_probable')}</b> "
+        f"(bull {payload.get('prob_bull_pct')}% / "
+        f"neutral {payload.get('prob_neutral_pct')}% / "
+        f"bear {payload.get('prob_bear_pct')}%)"
+    )
+
+    # Línea 1
+    lines.append(f"Presión defensiva: {payload.get('presion_defensiva')}")
+
+    # Línea 2
+    var_24h = payload.get("variacion_24h")
+    sign = "+" if isinstance(var_24h, (int, float)) and var_24h > 0 else ""
+
+    dom_stable = payload.get("dominancia_stable")
+
+    # Semáforo de dominancia stable
+    if isinstance(dom_stable, (int, float)):
+        if dom_stable < 8:
+            dom_text = f"<span style='color:green'><b>{dom_stable}%</b></span>"
+        elif dom_stable <= 10:
+            dom_text = f"🟡 <b>{dom_stable}%</b>"
+            else:
+                dom_text = f"🚨 <span style='color:red'><b>{dom_stable}%</b></span>"
+    else:
+        dom_text = f"{dom_stable}%"
+
+    lines.append(
+        f"Domin. stable: {dom_text} | "
+        f"Var. 24hs: {sign}{var_24h}%"
+    )
+
+    lines.append(
+        f"Acción sugerida: <b>{payload.get('accion_sugerida')}</b> | "
+        f"Exposición: {payload.get('exposicion_recomendada')}"
+    )
+
+    lines.append(
+        f"Stop probable: {payload.get('stop_loss_probable')} | "
+        f"TP probable: {payload.get('take_profit_probable')}"
+    )
+
     if last_action and last_action != payload.get('accion_sugerida'):
         lines.append(f"⚠️ Cambio acción: {last_action} → {payload.get('accion_sugerida')}")
+
     if last_escenario and last_escenario != payload.get('escenario_probable'):
         lines.append(f"⚠️ Cambio escenario: {last_escenario} → {payload.get('escenario_probable')}")
-    if payload.get('comentario_estrategico'):
-        lines.append(payload.get('comentario_estrategico'))
-    lines.append(f"Modelo: {payload.get('version_modelo')}")
+
+    if payload.get('comentario_operativo'):
+        lines.append(payload.get('comentario_operativo'))
+
     return "\n".join(lines)
+
 
 # -----------------------
 # MAIN orchestration
