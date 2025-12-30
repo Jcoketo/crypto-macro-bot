@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-# main.py - v2.4+stops - Macro + Patrones + Escenarios + Matriz de decisión + Telegram + Sheet.best
-# Incluye backtest avanzado con STOP LOSS y TAKE PROFIT estructurales.
+# main.py - v2.4-stops-decision + Telegram siempre (envía resumen en cada run)
 # Ejecutar: python main.py
-# Backtest: python main.py --backtest
+# Backtest (opcional): python main.py --backtest
 
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 import os
 import math
 import statistics
@@ -13,40 +12,34 @@ import csv
 import sys
 
 # -----------------------
-# CONFIG / SECRETS (set via GitHub Actions secrets)
+# CONFIG / SECRETS
 # -----------------------
 SHEETBEST_URL = os.getenv("SHEETBEST_URL")            # REQUIRED
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")          # OPTIONAL
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")      # OPTIONAL
 
-# Optional external endpoints (user-provided)
 ETF_FLOWS_URL = os.getenv("ETF_FLOWS_URL")            # OPTIONAL
 ONCHAIN_FLOWS_URL = os.getenv("ONCHAIN_FLOWS_URL")    # OPTIONAL
 
-# CoinGecko endpoints
 CG_GLOBAL = "https://api.coingecko.com/api/v3/global"
 CG_SIMPLE_BTC = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
 CG_BTC_MARKET_CHART = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days={days}"
 
-# Version
-MODEL_VERSION = "v2.4-stops"
+MODEL_VERSION = "v2.4-stops-decision"
 
-# Parameters
 HIST_LIMIT = 120
 Z_WINDOW = 14
 PERSIST_MIN = 3
 
-# Thresholds (tunable)
 TH_DEFENSIVO = 30
 TH_TRANS_BAJISTA = 45
 TH_NEUTRO = 55
 TH_TRANS_ALCISTA = 70
 
-# Stop/TP parameters (you can adjust)
-MAX_DRAWDOWN_STOP = -0.18   # stop if drawdown reaches -18% from entry
-TP_PROFIT_PCT = 0.25        # take profit if +25%
-TP_PRESION_DELTA = 20       # take profit if presion_def rises +20 pts vs entry
-STOP_PRESION = 75           # stop if presion_def >= 75
+MAX_DRAWDOWN_STOP = -0.18
+TP_PROFIT_PCT = 0.25
+TP_PRESION_DELTA = 20
+STOP_PRESION = 75
 
 # -----------------------
 # HELPERS
@@ -129,7 +122,7 @@ def post_to_sheet(payload):
     return r
 
 # -----------------------
-# Optional external fetchers
+# External fetcher (optional)
 # -----------------------
 def fetch_external_series(url):
     if not url:
@@ -180,7 +173,7 @@ def fetch_btc_24h_change():
         return None
 
 # -----------------------
-# Scoring / patterns / matrix (v2.4 logic)
+# Scoring & matrix (unchanged core)
 # -----------------------
 def score_patterns_to_probabilities(features):
     presion = features.get("presion_def", 50)
@@ -238,7 +231,7 @@ def decidir_accion_matrix(presion_def, probs, regime_guess, weekly_score, persis
     return "OBSERVAR", "30-40%", "NEUTRO", "Contexto mixto; esperar confirmación."
 
 # -----------------------
-# Exposure helpers used by backtest
+# Exposure helpers
 # -----------------------
 def parse_exposure(exposicion_str):
     if not exposicion_str:
@@ -281,13 +274,9 @@ def compute_drawdown(series):
     return maxdd
 
 # -----------------------
-# NEW BACKTEST: run_backtest_with_stops
+# BACKTEST with stops (kept for research, optional)
 # -----------------------
 def run_backtest_with_stops(historico_rows, price_by_date, out_csv="backtest_results_with_stops.csv"):
-    """
-    Backtest that simulates position entries according to accion_sugerida and exponesion,
-    and manages position with STOP LOSS and TAKE PROFIT rules (structural / regime-based).
-    """
     if not historico_rows:
         print("No hay historial para backtest.")
         return None
@@ -313,17 +302,13 @@ def run_backtest_with_stops(historico_rows, price_by_date, out_csv="backtest_res
         price_next = price_by_date.get(next_date)
 
         if price_today is None or price_next is None:
-            # skip days with missing prices
             continue
 
         presion = parse_float(row.get("presion_defensiva")) or 50
-        dom_stable = parse_float(row.get("dominancia_stable")) or 0
-        accel = parse_float(row.get("aceleracion")) or 0
         escenario = row.get("escenario_probable") or ""
         accion = (row.get("accion_sugerida") or "").upper()
         exposicion_str = row.get("exposicion_recomendada") or ""
 
-        # ENTRY: if not in position and action requests buy
         if not in_position and accion in ("COMPRAR", "COMPRAR PARCIAL"):
             exposure = parse_exposure(exposicion_str) or action_default_exposure(accion)
             in_position = True
@@ -336,44 +321,31 @@ def run_backtest_with_stops(historico_rows, price_by_date, out_csv="backtest_res
         take_profit = False
 
         if in_position:
-            # compute drawdown/profit relative to entry price
-            if entry_price and entry_price > 0:
-                ret_since_entry = price_today / entry_price - 1.0
-            else:
-                ret_since_entry = 0.0
+            ret_since_entry = price_today / entry_price - 1.0 if entry_price else 0.0
 
-            # STOP LOSS rules
             if presion >= STOP_PRESION:
                 stop_loss = True
             if ret_since_entry <= MAX_DRAWDOWN_STOP:
                 stop_loss = True
-            # structure-based: divergence + negative momentum (simplified)
             if escenario == "BAJISTA" and presion >= 55:
                 stop_loss = True
 
-            # TAKE PROFIT rules
             if ret_since_entry >= TP_PROFIT_PCT:
                 take_profit = True
             if presion >= (entry_presion + TP_PRESION_DELTA):
                 take_profit = True
             if escenario in ("NEUTRO", "BAJISTA") and ret_since_entry > 0:
-                # lock partial profits if scenario degraded
                 take_profit = True
 
-            # Execution of stop/take: update exposure and position status
             if stop_loss:
-                # harsh exit: reduce to minimal exposure
                 entry_exposure = 0.05
                 in_position = False
             elif take_profit:
-                # sell partial: leave reduced exposure
                 entry_exposure = min(entry_exposure, 0.30)
                 in_position = False
 
-        # If not in_position, exposure is zero or minimal depending on last action
         exposure_today = entry_exposure if in_position else (parse_exposure(exposicion_str) or action_default_exposure(accion) if accion in ("COMPRAR", "COMPRAR PARCIAL") else 0.0)
 
-        # DAILY RETURN (assume not-exposed capital in stable => 0% return)
         daily_return = exposure_today * (price_next / price_today - 1.0)
         capital = capital * (1 + daily_return)
 
@@ -397,7 +369,6 @@ def run_backtest_with_stops(historico_rows, price_by_date, out_csv="backtest_res
 
     max_dd = compute_drawdown([r["capital"] for r in results])
 
-    # write csv
     try:
         with open(out_csv, "w", newline="") as f:
             fieldnames = ["fecha","accion","exposure","price_today","price_next","daily_return","capital","stop_loss","take_profit"]
@@ -415,6 +386,143 @@ def run_backtest_with_stops(historico_rows, price_by_date, out_csv="backtest_res
         "total_return": results[-1]["capital"] - 1.0,
         "max_drawdown": max_dd,
         "steps": len(results)
+    }
+
+# -----------------------
+# --- NEW: motor decisional anticipado (SIEMPRE se ejecuta)
+# -----------------------
+def motor_decision_anticipada(historico, actual):
+    """
+    historico: lista de filas previas (orden cronológico ascendente)
+    actual: dict con llaves mínimas:
+      'presion_defensiva', 'aceleracion', 'dominancia_stable', 'dominancia_btc', 'score_semanal'
+    Devuelve dict con keys para agregar al payload.
+    """
+    presion = int(actual.get("presion_defensiva") or 50)
+    accel = float(actual.get("aceleracion") or 0.0)
+    dom_stable = float(actual.get("dominancia_stable") or 0.0)
+    dom_btc = float(actual.get("dominancia_btc") or 0.0)
+    weekly = int(actual.get("score_semanal") or 50)
+
+    # base probabilidades (heurístico, combinatorio)
+    prob_bull = 0; prob_neutral = 0; prob_bear = 0
+    # presion domina
+    if presion >= 75:
+        prob_bear += 50
+    elif presion >= 60:
+        prob_bear += 30
+    elif presion >= 45:
+        prob_bear += 10
+    else:
+        prob_bull += 10
+
+    # aceleracion & dirección
+    if accel > 1.5:
+        prob_bear += 20
+    elif accel < -1.0:
+        prob_bull += 15
+    elif abs(accel) < 0.3:
+        prob_neutral += 10
+
+    # dominancia trend recent (pendiente simple)
+    dom_series = [r.get("dominancia_stable") for r in historico if r.get("dominancia_stable") is not None]
+    if dom_series and len(dom_series) >= 3:
+        pend = (dom_stable - dom_series[-3]) / 1.0
+        if pend > 0.3:
+            prob_bear += 15
+        elif pend < -0.3:
+            prob_bull += 15
+
+    # BTC dominance tilt
+    dom_btc_series = [r.get("dominancia_btc") for r in historico if r.get("dominancia_btc") is not None]
+    if dom_btc_series and len(dom_btc_series) >= 3:
+        btc_pend = dom_btc - dom_btc_series[-3]
+        if btc_pend > 0.5:
+            prob_bear += 8
+        elif btc_pend < -0.5:
+            prob_bull += 5
+
+    # weekly score influence (smoothing)
+    if weekly <= TH_DEFENSIVO:
+        prob_bear += 10
+    elif weekly >= TH_TRANS_ALCISTA:
+        prob_bull += 8
+    else:
+        prob_neutral += 5
+
+    # normalize to percentages
+    raw = {"bull": prob_bull, "neutral": prob_neutral, "bear": prob_bear}
+    s = sum(raw.values())
+    if s == 0:
+        probs = {"bull":33, "neutral":34, "bear":33}
+    else:
+        probs = {k: int(round(v/s*100)) for k,v in raw.items()}
+        # adjust rounding
+        diff = 100 - sum(probs.values())
+        if diff != 0:
+            kmax = max(probs, key=probs.get)
+            probs[kmax] += diff
+
+    # escenario probable
+    if probs["bull"] > probs["bear"] and probs["bull"] > probs["neutral"]:
+        escenario = "ALCISTA"
+    elif probs["bear"] > probs["bull"] and probs["bear"] > probs["neutral"]:
+        escenario = "BAJISTA"
+    else:
+        escenario = "NEUTRO"
+
+    # accion sugerida (simple mapping)
+    accion = "OBSERVAR"
+    expos = "30-40%"
+    sesgo = "NEUTRO"
+    if probs["bear"] >= 70 or presion >= 80:
+        accion = "VENDER"
+        expos = "0-15%"
+        sesgo = "BAJISTA"
+    elif probs["bear"] >= 55 or presion >= 60:
+        accion = "VENDER PARCIAL"
+        expos = "10-30%"
+        sesgo = "BAJISTA"
+    elif probs["bull"] >= 65 and presion <= 35:
+        accion = "COMPRAR"
+        expos = "60-80%"
+        sesgo = "ALCISTA"
+    elif probs["bull"] >= 50 and presion <= 45:
+        accion = "COMPRAR PARCIAL"
+        expos = "40-60%"
+        sesgo = "ALCISTA"
+
+    # stops & TPs (probables) - boolean flags
+    stop_loss = False
+    take_profit = False
+
+    # stop: regime invalidation OR drawdown heuristics
+    if presion >= STOP_PRESION:
+        stop_loss = True
+    # acceleration spike combined with high presion
+    if accel > 1.2 and presion > 60:
+        stop_loss = True
+    # take profit: presion sobe relativo al historico inmediato
+    last_pres = historico[-1].get("presion_defensiva") if historico and historico[-1].get("presion_defensiva") is not None else presion
+    if presion - (last_pres or presion) >= TP_PRESION_DELTA:
+        take_profit = True
+
+    comentario = f"Escenario {escenario}. Probabilidades BULL {probs['bull']}% | NEUT {probs['neutral']}% | BEAR {probs['bear']}%. "
+    comentario += "Stop loss probable. " if stop_loss else ""
+    comentario += "Take profit probable. " if take_profit else ""
+    comentario += "Revisar condiciones y persistencia."
+
+    return {
+        "escenario_probable": escenario,
+        "prob_bull_pct": int(probs["bull"]),
+        "prob_neutral_pct": int(probs["neutral"]),
+        "prob_bear_pct": int(probs["bear"]),
+        "accion_sugerida": accion,
+        "exposicion_recomendada": expos,
+        "sesgo_operativo": sesgo,
+        "stop_loss_probable": "SI" if stop_loss else "NO",
+        "take_profit_probable": "SI" if take_profit else "NO",
+        "comentario_estrategico": comentario
     }
 
 # -----------------------
@@ -436,23 +544,22 @@ def send_telegram(text):
 
 def telegram_summary(payload, last_action=None, last_escenario=None):
     lines = []
-    lines.append(f"📊 <b>Macro v2.4 - {payload.get('fecha')}</b>")
+    lines.append(f"📊 <b>Macro {MODEL_VERSION} - {payload.get('fecha')}</b>")
     lines.append(f"Escenario probable: <b>{payload.get('escenario_probable')}</b> (bull {payload.get('prob_bull_pct')}% / neutral {payload.get('prob_neutral_pct')}% / bear {payload.get('prob_bear_pct')}%)")
     lines.append(f"Presion defensiva: {payload.get('presion_defensiva')} | Domin. stable: {payload.get('dominancia_stable')}%")
     lines.append(f"Acción sugerida: <b>{payload.get('accion_sugerida')}</b> | Exposición: {payload.get('exposicion_recomendada')}")
+    lines.append(f"Stop probable: {payload.get('stop_loss_probable')} | TP probable: {payload.get('take_profit_probable')}")
     if last_action and last_action != payload.get('accion_sugerida'):
         lines.append(f"⚠️ Cambio acción: {last_action} → {payload.get('accion_sugerida')}")
     if last_escenario and last_escenario != payload.get('escenario_probable'):
         lines.append(f"⚠️ Cambio escenario: {last_escenario} → {payload.get('escenario_probable')}")
-    if payload.get('condiciones_activacion'):
-        lines.append("Condiciones: " + payload.get('condiciones_activacion'))
-    if payload.get('señales_invalidacion'):
-        lines.append("Invalidación: " + payload.get('señales_invalidacion'))
+    if payload.get('comentario_estrategico'):
+        lines.append(payload.get('comentario_estrategico'))
     lines.append(f"Modelo: {payload.get('version_modelo')}")
     return "\n".join(lines)
 
 # -----------------------
-# MAIN run (v2.4 logic + call backtest_with_stops when requested)
+# MAIN orchestration
 # -----------------------
 def main(run_backtest_flag=False):
     # 1) fetch core data
@@ -468,7 +575,6 @@ def main(run_backtest_flag=False):
     dom_usdt = parse_float(market_pct.get("usdt") or market_pct.get("tether"))
     dom_usdc = parse_float(market_pct.get("usd-coin") or market_pct.get("usdc"))
 
-    # total stables best-effort
     stable_keys = ["tether","usdt","usd-coin","usdc","dai","busd","binance-usd","frax","tusd","true-usd"]
     dom_stable = 0.0
     for k in stable_keys:
@@ -478,7 +584,7 @@ def main(run_backtest_flag=False):
             except: pass
     dom_stable = round(dom_stable, 4)
 
-    # 2) fetch BTC chart and price change
+    # fetch BTC series & 24h change
     btc_chart = fetch_btc_market_chart_days(days=HIST_LIMIT+10)
     btc_prices = []; btc_vols = []
     if btc_chart:
@@ -488,14 +594,9 @@ def main(run_backtest_flag=False):
         btc_vols = [v[1] for v in vols]
     btc_24h = fetch_btc_24h_change()
 
-    # 3) history from sheet
+    # read history
     historico = leer_historico(limit=HIST_LIMIT)
 
-    # 4) external series (optional)
-    etf_series = fetch_external_series(ETF_FLOWS_URL) if ETF_FLOWS_URL else {}
-    onchain_series = fetch_external_series(ONCHAIN_FLOWS_URL) if ONCHAIN_FLOWS_URL else {}
-
-    # 5) compute metrics
     hist_vars = [r.get("variacion_24h") for r in historico if r.get("variacion_24h") is not None]
     hist_accs = [r.get("aceleracion") for r in historico if r.get("aceleracion") is not None]
     hist_dom_stable = [r.get("dominancia_stable") for r in historico if r.get("dominancia_stable") is not None]
@@ -515,7 +616,7 @@ def main(run_backtest_flag=False):
     z_var = zscore(variacion_24h, hist_vars) if hist_vars else 0.0
     z_acc = zscore(aceleracion, hist_accs) if hist_accs else 0.0
 
-    # 6) detect patterns
+    # detect patterns
     divergence = False
     if btc_24h is not None:
         if btc_24h > 0.7 and (z_var > 1.0 or variacion_24h > 1.0):
@@ -527,7 +628,7 @@ def main(run_backtest_flag=False):
         if btc_vols[-1] > avg7 * 1.8:
             volume_spike = True
 
-    # 7) presion defensiva
+    # presion defensiva
     presion_def = 50
     if z_var > 1.5: presion_def += 30
     elif z_var > 0.8: presion_def += 20
@@ -551,7 +652,6 @@ def main(run_backtest_flag=False):
         regime_guess = "TRANSICION ALCISTA"
     else:
         regime_guess = "RISK-ON"
-
     if regime_guess in ["DEFENSIVO","TRANSICION BAJISTA"] and z_var < 0 and z_acc < 0:
         presion_def += 10
     presion_def = int(max(0, min(100, round(presion_def))))
@@ -566,25 +666,24 @@ def main(run_backtest_flag=False):
     }
     probs = score_patterns_to_probabilities(features)
 
-    # 8) decide action
+    # decide action base
     persist_baj = sum(1 for s in hist_scores[-5:] if s < TH_DEFENSIVO)
     persist_alc = sum(1 for s in hist_scores[-5:] if s > TH_TRANS_ALCISTA)
-    accion, exposicion, sesgo, comentario = decidir_accion_matrix(presion_def, probs, regime_guess, weekly_score, persist_baj, persist_alc)
+    accion_base, expos_base, sesgo_base, comentario_base = decidir_accion_matrix(presion_def, probs, regime_guess, weekly_score, persist_baj, persist_alc)
 
-    # 9) conditions & invalidation text
-    condiciones = []
-    invalidacion = []
-    if probs["bull"] >= probs["bear"] and probs["bull"] >= probs["neutral"]:
-        condiciones.append("USDT.D en caída sostenida; BTC.D baja; estructura alcista en BTC; volumen confirma acumulación.")
-        invalidacion.append("USDT.D rompe al alza o presion_def > 60.")
-    if probs["bear"] >= probs["bull"] and probs["bear"] >= probs["neutral"]:
-        condiciones.append("Aumento dominancia stable + divergencia precio/flujo + volumen en caídas.")
-        invalidacion.append("USDT.D cae sostenidamente y dominancia BTC se reduce.")
-    if probs["neutral"] >= probs["bull"] and probs["neutral"] >= probs["bear"]:
-        condiciones.append("Dominancias estables; mercado en rango.")
-        invalidacion.append("Ruptura con volumen.")
+    # ---------- RUN motor decisional OBLIGATORIO ----------
+    actual_context = {
+        "presion_defensiva": presion_def,
+        "aceleracion": aceleracion,
+        "dominancia_stable": dom_stable,
+        "dominancia_btc": dom_btc,
+        "score_semanal": weekly_score
+    }
+    decision = motor_decision_anticipada(historico, actual_context)
+    # decision contains keys: escenario_probable, prob_bull_pct, prob_neutral_pct, prob_bear_pct,
+    # accion_sugerida, exposicion_recomendada, sesgo_operativo, stop_loss_probable, take_profit_probable, comentario_estrategico
 
-    # 10) build payload
+    # Build payload merging base + decision (decision overrides base where appropriate)
     fecha = now_iso()
     payload = {
         "fecha": fecha,
@@ -602,22 +701,50 @@ def main(run_backtest_flag=False):
         "score_semanal": int(weekly_score),
         "presion_defensiva": int(presion_def),
         "divergencia_precio_flujo": "TRUE" if divergence else "FALSE",
-        "prob_bull_pct": int(probs["bull"]),
-        "prob_neutral_pct": int(probs["neutral"]),
-        "prob_bear_pct": int(probs["bear"]),
-        "escenario_probable": ("ALCISTA" if probs["bull"]>probs["bear"] and probs["bull"]>probs["neutral"] else ("BAJISTA" if probs["bear"]>probs["bull"] and probs["bear"]>probs["neutral"] else "NEUTRO")),
-        "condiciones_activacion": "; ".join(condiciones),
-        "señales_invalidacion": "; ".join(invalidacion),
+        "prob_bull_pct": int(decision.get("prob_bull_pct")),
+        "prob_neutral_pct": int(decision.get("prob_neutral_pct")),
+        "prob_bear_pct": int(decision.get("prob_bear_pct")),
+        "escenario_probable": decision.get("escenario_probable"),
+        "condiciones_activacion": "; ".join([c for c in [", ".join([str(k) for k in []])] if c]) ,  # placeholder
+        "señales_invalidacion": "; ".join([c for c in []]),
         "estructura_mercado": features["market_structure"],
         "volumen_spike": "TRUE" if volume_spike else "FALSE",
-        "accion_sugerida": accion,
-        "exposicion_recomendada": exposicion,
-        "sesgo_operativo": sesgo,
-        "comentario_operativo": comentario,
+        # from decision
+        "accion_sugerida": decision.get("accion_sugerida"),
+        "exposicion_recomendada": decision.get("exposicion_recomendada"),
+        "sesgo_operativo": decision.get("sesgo_operativo"),
+        "comentario_operativo": decision.get("comentario_estrategico"),
+        "stop_loss_probable": decision.get("stop_loss_probable"),
+        "take_profit_probable": decision.get("take_profit_probable"),
         "version_modelo": MODEL_VERSION
     }
 
-    # 11) Post / avoid duplicates / telegram
+    # --- ENVÍO TELEGRAM SIEMPRE (inmediatamente después de construir `payload`) ---
+    last_action_ctx = None
+    last_escenario_ctx = None
+    try:
+        if SHEETBEST_URL:
+            r_tmp = safe_get(SHEETBEST_URL)
+            rows_tmp = r_tmp.json()
+            last_row_tmp = rows_tmp[-1] if rows_tmp else None
+            if last_row_tmp:
+                last_action_ctx = (last_row_tmp.get("accion_sugerida") or last_row_tmp.get("accion") or "").strip()
+                last_escenario_ctx = (last_row_tmp.get("escenario_probable") or "").strip()
+    except Exception as e:
+        print("Warning: no se pudo leer último registro para contexto de Telegram:", e)
+
+    try:
+        msg = telegram_summary(payload, last_action=last_action_ctx, last_escenario=last_escenario_ctx)
+        sent = send_telegram(msg)
+        if sent:
+            print("✅ Telegram: notificación enviada (run).")
+        else:
+            print("ℹ️ Telegram: no configurado o envío omitido.")
+    except Exception as e:
+        print("Error enviando Telegram (no crítico):", e)
+    # --- FIN ENVÍO TELEGRAM SIEMPRE ---
+
+    # 11) Post / avoid duplicates / telegram (post-send)
     try:
         if not SHEETBEST_URL:
             print("SHEETBEST_URL no configurada. Payload:")
@@ -643,16 +770,15 @@ def main(run_backtest_flag=False):
             else:
                 post_to_sheet(payload)
                 print("Registro subido.")
-                if presion_def >= 70 or payload["escenario_probable"] == "BAJISTA" or accion.startswith("VENDER"):
+                if presion_def >= 70 or payload["escenario_probable"] == "BAJISTA" or payload["accion_sugerida"].startswith("VENDER"):
                     send_telegram(telegram_summary(payload, last_action=last_action, last_escenario=last_escenario))
     except Exception as e:
         print("Error chequeo/posteo:", e)
         print(payload)
 
-    # 12) optionally run backtest if requested
+    # Optional backtest run (for research)
     if run_backtest_flag:
         print("Ejecutando backtest con stops (flag activo)...")
-        # build date->price map from btc_chart
         date_price_map = {}
         if btc_chart:
             for p in btc_chart.get("prices", []):
@@ -662,8 +788,8 @@ def main(run_backtest_flag=False):
         bt_summary = run_backtest_with_stops(historico, date_price_map, out_csv="backtest_with_stops.csv")
         print("Backtest summary:", bt_summary)
 
-    # 13) console summary
-    print("=== Resumen v2.4 (stops) ===")
+    # final console summary
+    print("=== Resumen v2.4 ===")
     print("fecha:", fecha)
     print("dominancia_stable:", payload["dominancia_stable"])
     print("presion_defensiva:", payload["presion_defensiva"])
