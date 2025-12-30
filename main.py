@@ -545,6 +545,7 @@ def send_telegram(text):
 def telegram_summary(payload, last_action=None, last_escenario=None):
     lines = []
 
+    # Título
     lines.append(f"📰 <b>NOTICIAS PARA {payload.get('fecha')}</b>")
     lines.append("")
 
@@ -555,10 +556,10 @@ def telegram_summary(payload, last_action=None, last_escenario=None):
         f"bear {payload.get('prob_bear_pct')}%)"
     )
 
-    # Línea 1
+    # Línea 1: presión defensiva
     lines.append(f"Presión defensiva: {payload.get('presion_defensiva')}")
 
-    # Línea 2
+    # Línea 2: dominancia stable + variación 24h
     var_24h = payload.get("variacion_24h")
     sign = "+" if isinstance(var_24h, (int, float)) and var_24h > 0 else ""
 
@@ -570,8 +571,8 @@ def telegram_summary(payload, last_action=None, last_escenario=None):
             dom_text = f"<span style='color:green'><b>{dom_stable}%</b></span>"
         elif dom_stable <= 10:
             dom_text = f"🟡 <b>{dom_stable}%</b>"
-            else:
-                dom_text = f"🚨 <span style='color:red'><b>{dom_stable}%</b></span>"
+        else:
+            dom_text = f"🚨 <span style='color:red'><b>{dom_stable}%</b></span>"
     else:
         dom_text = f"{dom_stable}%"
 
@@ -580,22 +581,31 @@ def telegram_summary(payload, last_action=None, last_escenario=None):
         f"Var. 24hs: {sign}{var_24h}%"
     )
 
+    # Acción y exposición
     lines.append(
         f"Acción sugerida: <b>{payload.get('accion_sugerida')}</b> | "
         f"Exposición: {payload.get('exposicion_recomendada')}"
     )
 
+    # Stops
     lines.append(
         f"Stop probable: {payload.get('stop_loss_probable')} | "
         f"TP probable: {payload.get('take_profit_probable')}"
     )
 
+    # Cambios de acción
     if last_action and last_action != payload.get('accion_sugerida'):
-        lines.append(f"⚠️ Cambio acción: {last_action} → {payload.get('accion_sugerida')}")
+        lines.append(
+            f"⚠️ Cambio acción: {last_action} → {payload.get('accion_sugerida')}"
+        )
 
+    # Cambios de escenario
     if last_escenario and last_escenario != payload.get('escenario_probable'):
-        lines.append(f"⚠️ Cambio escenario: {last_escenario} → {payload.get('escenario_probable')}")
+        lines.append(
+            f"⚠️ Cambio escenario: {last_escenario} → {payload.get('escenario_probable')}"
+        )
 
+    # Comentario operativo
     if payload.get('comentario_operativo'):
         lines.append(payload.get('comentario_operativo'))
 
