@@ -569,7 +569,7 @@ def telegram_summary(payload, last_action=None, last_escenario=None):
     if isinstance(dom_stable, (int, float)):
         if dom_stable < 8:
             dom_text = f"<span style='color:green'><b>{dom_stable}%</b></span>"
-        elif dom_stable <= 10:
+        elif dom_stable <= 9:
             dom_text = f"🟡 <b>{dom_stable}%</b>"
         else:
             dom_text = f"🚨 <span style='color:red'><b>{dom_stable}%</b></span>"
