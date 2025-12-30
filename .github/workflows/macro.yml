@@ -2,7 +2,7 @@ name: Daily Bot
 
 on:
   schedule:
-    - cron: "0 0 * * *"   # 00:00 UTC = 21:00 Argentina (ejecuta 1 vez/día)
+    - cron: "0 0,12 * * *"
   workflow_dispatch:
 
 jobs:
