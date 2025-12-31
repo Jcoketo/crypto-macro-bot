@@ -30,6 +30,10 @@ def send_telegram(message: str):
 # =========================
 def safe_float(v):
     try:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v = v.replace("%", "").replace(",", "").strip()
         return float(v)
     except:
         return None
