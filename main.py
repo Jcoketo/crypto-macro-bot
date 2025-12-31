@@ -53,14 +53,16 @@ def safe_get(url, timeout=15, params=None, headers=None):
     return r
 
 def parse_float(x):
+    """Parsea strings numéricos con formatos europeos y signos % → devuelve float o None."""
     if x is None or x == "":
         return None
     try:
-        # acepta tanto "3.000,00" como "3000.00" y "%" si aparece
         s = str(x).strip()
         s = s.replace("%", "")
+        # 3.060.676.807.950,00  -> 3060676807950.00
         if "." in s and "," in s:
             s = s.replace(".", "").replace(",", ".")
+        # 57,42 -> 57.42
         elif "," in s and "." not in s:
             s = s.replace(",", ".")
         return float(s)
@@ -90,15 +92,15 @@ def sma(values, n):
 
 # Decimal helpers
 def to_decimal(x):
+    """Convierte x a Decimal de forma robusta; acepta str, float, Decimal."""
     if x is None or x == "":
         return None
     try:
         return Decimal(str(x))
-    except:
+    except Exception:
         try:
-            # last resort: using float->str
-            return Decimal(str(float(x)))
-        except:
+            return Decimal(float(x))
+        except Exception:
             return None
 
 def fmt_decimal(x, places=8):
@@ -113,8 +115,23 @@ def fmt_decimal(x, places=8):
     try:
         return format(d.quantize(quant, rounding=ROUND_HALF_UP), 'f')
     except:
-        # fallback
         return format(d, 'f')
+
+def normalize_percentage(x):
+    """
+    Corrige valores escalados erróneamente.
+    - Si x es None devuelve None.
+    - Si x es muy grande (>1000) asumimos escala *1e8 (caso visto) y dividimos.
+    Devuelve Decimal (porcentaje en rango humano) o None.
+    """
+    d = to_decimal(x)
+    if d is None:
+        return None
+    # heurística: valores absurdamente grandes -> dividir por 1e8
+    if d > Decimal("1000"):
+        return d / Decimal("100000000")
+    # si está en [0, 1000] lo dejamos tal cual
+    return d
 
 # -----------------------
 # SHEET.BEST IO
@@ -132,13 +149,24 @@ def leer_historico(limit=HIST_LIMIT):
         rows = data[-limit:]
         hist = []
         for row in rows:
+            # parseamos y normalizamos dominancias históricas
+            raw_dom_btc = row.get("dominancia_btc")
+            raw_dom_stable = row.get("dominancia_stable")
+
+            prev_dom_btc_f = parse_float(raw_dom_btc)
+            prev_dom_stable_f = parse_float(raw_dom_stable)
+
+            # normalize_percentage devuelve Decimal -> convertimos a float para cálculos
+            norm_dom_btc = normalize_percentage(prev_dom_btc_f)
+            norm_dom_stable = normalize_percentage(prev_dom_stable_f)
+
             hist.append({
                 "fecha": row.get("fecha"),
                 "total_market_cap": parse_float(row.get("total_market_cap")),
-                "dominancia_btc": parse_float(row.get("dominancia_btc")),
+                "dominancia_btc": float(norm_dom_btc) if norm_dom_btc is not None else None,
                 "dominancia_usdt": parse_float(row.get("dominancia_usdt") or row.get("usdt_d")),
                 "dominancia_usdc": parse_float(row.get("dominancia_usdc") or row.get("usdc_d")),
-                "dominancia_stable": parse_float(row.get("dominancia_stable")),
+                "dominancia_stable": float(norm_dom_stable) if norm_dom_stable is not None else None,
                 "variacion_24h": parse_float(row.get("variacion_24h")),
                 "aceleracion": parse_float(row.get("aceleracion")),
                 "score_diario": parse_float(row.get("score_diario")),
@@ -443,8 +471,8 @@ def motor_decision_anticipada(historico, actual):
     weekly = int(actual.get("score_semanal") or 50)
 
     # base probabilidades (heurístico, combinatorio)
-    prob_bull = 0; prob_neutral = 0; prob_bear = 0
-    # presion domina
+    prob_bull = 0; neutral = 0
+    prob_neutral = 0; prob_bear = 0
     if presion >= 75:
         prob_bear += 50
     elif presion >= 60:
@@ -454,7 +482,6 @@ def motor_decision_anticipada(historico, actual):
     else:
         prob_bull += 10
 
-    # aceleracion & dirección
     if accel > 1.5:
         prob_bear += 20
     elif accel < -1.0:
@@ -462,7 +489,6 @@ def motor_decision_anticipada(historico, actual):
     elif abs(accel) < 0.3:
         prob_neutral += 10
 
-    # dominancia trend recent (pendiente simple)
     dom_series = [r.get("dominancia_stable") for r in historico if r.get("dominancia_stable") is not None]
     if dom_series and len(dom_series) >= 3:
         pend = (dom_stable - dom_series[-3]) / 1.0
@@ -471,7 +497,6 @@ def motor_decision_anticipada(historico, actual):
         elif pend < -0.3:
             prob_bull += 15
 
-    # BTC dominance tilt
     dom_btc_series = [r.get("dominancia_btc") for r in historico if r.get("dominancia_btc") is not None]
     if dom_btc_series and len(dom_btc_series) >= 3:
         btc_pend = dom_btc - dom_btc_series[-3]
@@ -480,7 +505,6 @@ def motor_decision_anticipada(historico, actual):
         elif btc_pend < -0.5:
             prob_bull += 5
 
-    # weekly score influence (smoothing)
     if weekly <= TH_DEFENSIVO:
         prob_bear += 10
     elif weekly >= TH_TRANS_ALCISTA:
@@ -488,20 +512,17 @@ def motor_decision_anticipada(historico, actual):
     else:
         prob_neutral += 5
 
-    # normalize to percentages
     raw = {"bull": prob_bull, "neutral": prob_neutral, "bear": prob_bear}
     s = sum(raw.values())
     if s == 0:
         probs = {"bull":33, "neutral":34, "bear":33}
     else:
         probs = {k: int(round(v/s*100)) for k,v in raw.items()}
-        # adjust rounding
         diff = 100 - sum(probs.values())
         if diff != 0:
             kmax = max(probs, key=probs.get)
             probs[kmax] += diff
 
-    # escenario probable
     if probs["bull"] > probs["bear"] and probs["bull"] > probs["neutral"]:
         escenario = "ALCISTA"
     elif probs["bear"] > probs["bull"] and probs["bear"] > probs["neutral"]:
@@ -509,7 +530,6 @@ def motor_decision_anticipada(historico, actual):
     else:
         escenario = "NEUTRO"
 
-    # accion sugerida (simple mapping)
     accion = "OBSERVAR"
     expos = "30-40%"
     sesgo = "NEUTRO"
@@ -530,17 +550,14 @@ def motor_decision_anticipada(historico, actual):
         expos = "40-60%"
         sesgo = "ALCISTA"
 
-    # stops & TPs (probables) - boolean flags
     stop_loss = False
     take_profit = False
 
-    # stop: regime invalidation OR drawdown heuristics
     if presion >= STOP_PRESION:
         stop_loss = True
-    # acceleration spike combined with high presion
     if accel > 1.2 and presion > 60:
         stop_loss = True
-    # take profit: presion sobe relativo al historico inmediato
+
     last_pres = historico[-1].get("presion_defensiva") if historico and historico[-1].get("presion_defensiva") is not None else presion
     if presion - (last_pres or presion) >= TP_PRESION_DELTA:
         take_profit = True
@@ -599,24 +616,27 @@ def telegram_summary(payload, last_action=None, last_escenario=None):
 
     # Línea 2: dominancia stable + variación 24h
     var_24h = payload.get("variacion_24h")
-    sign = "+" if isinstance(var_24h, (int, float, Decimal)) and float(var_24h) > 0 else ""
-
-    dom_stable = payload.get("dominancia_stable")
-
-    # Semáforo de dominancia stable
+    # var_24h puede ser string (fmt_decimal) o número -> intentar convertir
     try:
-        dom_stable_val = float(dom_stable) if dom_stable != "" else None
+        var_24h_val = float(str(var_24h)) if var_24h != "" else None
+    except:
+        var_24h_val = None
+    sign = "+" if isinstance(var_24h_val, (int, float)) and var_24h_val > 0 else ""
+
+    dom_stable_raw = payload.get("dominancia_stable")
+    try:
+        dom_stable_val = float(str(dom_stable_raw)) if dom_stable_raw not in (None, "") else None
     except:
         dom_stable_val = None
 
     if isinstance(dom_stable_val, (int, float)) and dom_stable_val < 8:
-        dom_text = f"<span style='color:green'><b>{dom_stable}%</b></span>"
+        dom_text = f"<span style='color:green'><b>{dom_stable_raw}%</b></span>"
     elif isinstance(dom_stable_val, (int, float)) and dom_stable_val <= 9:
-        dom_text = f"🟡 <b>{dom_stable}%</b>"
+        dom_text = f"🟡 <b>{dom_stable_raw}%</b>"
     elif isinstance(dom_stable_val, (int, float)):
-        dom_text = f"🚨 <span style='color:red'><b>{dom_stable}%</b></span>"
+        dom_text = f"🚨 <span style='color:red'><b>{dom_stable_raw}%</b></span>"
     else:
-        dom_text = f"{dom_stable}%"
+        dom_text = f"{dom_stable_raw}%"
 
     lines.append(
         f"Domin. stable: {dom_text} | "
@@ -678,8 +698,7 @@ def main(run_backtest_flag=False):
         if v is not None:
             try: dom_stable += float(v)
             except: pass
-    # No truncamos aquí; mantenemos la precisión natural (float). Formateamos al guardar.
-    # dom_stable = round(dom_stable, 4)
+    # dom_stable mantiene su precisión en float para cálculos internos
 
     # fetch BTC series & 24h change
     btc_chart = fetch_btc_market_chart_days(days=HIST_LIMIT+10)
@@ -777,20 +796,17 @@ def main(run_backtest_flag=False):
         "score_semanal": weekly_score
     }
     decision = motor_decision_anticipada(historico, actual_context)
-    # decision contains keys: escenario_probable, prob_bull_pct, prob_neutral_pct, prob_bear_pct,
-    # accion_sugerida, exposicion_recomendada, sesgo_operativo, stop_loss_probable, take_profit_probable, comentario_estrategico
 
     # Build payload merging base + decision (decision overrides base where appropriate)
     fecha = now_iso()
     payload = {
         "fecha": fecha,
-        # total_market_cap lo dejamos como entero (igual comportamiento previo)
         "total_market_cap": int(round(total_mcap)) if total_mcap else "",
-        # dominancias / variaciones / aceleracion / pendientes -> guardamos con formato Decimal 8 decimales
-        "dominancia_btc": fmt_decimal(dom_btc, places=8),
-        "dominancia_usdt": fmt_decimal(dom_usdt, places=8),
-        "dominancia_usdc": fmt_decimal(dom_usdc, places=8),
-        "dominancia_stable": fmt_decimal(dom_stable, places=8),
+        # normalizamos y formateamos con 8 decimales para persistencia
+        "dominancia_btc": fmt_decimal(normalize_percentage(dom_btc), places=8),
+        "dominancia_usdt": fmt_decimal(normalize_percentage(dom_usdt), places=8),
+        "dominancia_usdc": fmt_decimal(normalize_percentage(dom_usdc), places=8),
+        "dominancia_stable": fmt_decimal(normalize_percentage(dom_stable), places=8),
         "variacion_24h": fmt_decimal(variacion_24h, places=8),
         "aceleracion": fmt_decimal(aceleracion, places=8),
         "pendiente_7d": fmt_decimal(pendiente_7d, places=8),
