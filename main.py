@@ -11,6 +11,9 @@ import statistics
 import csv
 import sys
 
+from decimal import Decimal, getcontext, ROUND_HALF_UP
+getcontext().prec = 28  # precisión general para Decimal
+
 # -----------------------
 # CONFIG / SECRETS
 # -----------------------
@@ -53,7 +56,14 @@ def parse_float(x):
     if x is None or x == "":
         return None
     try:
-        return float(str(x).replace(",", ".").replace("%", ""))
+        # acepta tanto "3.000,00" como "3000.00" y "%" si aparece
+        s = str(x).strip()
+        s = s.replace("%", "")
+        if "." in s and "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        elif "," in s and "." not in s:
+            s = s.replace(",", ".")
+        return float(s)
     except:
         return None
 
@@ -77,6 +87,34 @@ def sma(values, n):
     if len(vals) < n:
         return None
     return sum(vals[-n:]) / n
+
+# Decimal helpers
+def to_decimal(x):
+    if x is None or x == "":
+        return None
+    try:
+        return Decimal(str(x))
+    except:
+        try:
+            # last resort: using float->str
+            return Decimal(str(float(x)))
+        except:
+            return None
+
+def fmt_decimal(x, places=8):
+    """
+    Devuelve una string con `places` decimales usando Decimal y rounding HALF_UP.
+    Si x es None devuelve "".
+    """
+    d = to_decimal(x)
+    if d is None:
+        return ""
+    quant = Decimal('1e-{p}'.format(p=places))
+    try:
+        return format(d.quantize(quant, rounding=ROUND_HALF_UP), 'f')
+    except:
+        # fallback
+        return format(d, 'f')
 
 # -----------------------
 # SHEET.BEST IO
@@ -561,24 +599,28 @@ def telegram_summary(payload, last_action=None, last_escenario=None):
 
     # Línea 2: dominancia stable + variación 24h
     var_24h = payload.get("variacion_24h")
-    sign = "+" if isinstance(var_24h, (int, float)) and var_24h > 0 else ""
+    sign = "+" if isinstance(var_24h, (int, float, Decimal)) and float(var_24h) > 0 else ""
 
     dom_stable = payload.get("dominancia_stable")
 
     # Semáforo de dominancia stable
-    if isinstance(dom_stable, (int, float)):
-        if dom_stable < 8:
-            dom_text = f"<span style='color:green'><b>{dom_stable}%</b></span>"
-        elif dom_stable <= 9:
-            dom_text = f"🟡 <b>{dom_stable}%</b>"
-        else:
-            dom_text = f"🚨 <span style='color:red'><b>{dom_stable}%</b></span>"
+    try:
+        dom_stable_val = float(dom_stable) if dom_stable != "" else None
+    except:
+        dom_stable_val = None
+
+    if isinstance(dom_stable_val, (int, float)) and dom_stable_val < 8:
+        dom_text = f"<span style='color:green'><b>{dom_stable}%</b></span>"
+    elif isinstance(dom_stable_val, (int, float)) and dom_stable_val <= 9:
+        dom_text = f"🟡 <b>{dom_stable}%</b>"
+    elif isinstance(dom_stable_val, (int, float)):
+        dom_text = f"🚨 <span style='color:red'><b>{dom_stable}%</b></span>"
     else:
         dom_text = f"{dom_stable}%"
 
     lines.append(
         f"Domin. stable: {dom_text} | "
-        f"Var. 24hs: {sign}{var_24h}%"
+        f"Var. 24hs: {sign}{payload.get('variacion_24h')}%"
     )
 
     # Acción y exposición
@@ -636,7 +678,8 @@ def main(run_backtest_flag=False):
         if v is not None:
             try: dom_stable += float(v)
             except: pass
-    dom_stable = round(dom_stable, 4)
+    # No truncamos aquí; mantenemos la precisión natural (float). Formateamos al guardar.
+    # dom_stable = round(dom_stable, 4)
 
     # fetch BTC series & 24h change
     btc_chart = fetch_btc_market_chart_days(days=HIST_LIMIT+10)
@@ -741,16 +784,18 @@ def main(run_backtest_flag=False):
     fecha = now_iso()
     payload = {
         "fecha": fecha,
+        # total_market_cap lo dejamos como entero (igual comportamiento previo)
         "total_market_cap": int(round(total_mcap)) if total_mcap else "",
-        "dominancia_btc": round(dom_btc,2) if dom_btc is not None else "",
-        "dominancia_usdt": round(dom_usdt,3) if dom_usdt is not None else "",
-        "dominancia_usdc": round(dom_usdc,3) if dom_usdc is not None else "",
-        "dominancia_stable": round(dom_stable,3),
-        "variacion_24h": round(variacion_24h,3),
-        "aceleracion": round(aceleracion,3),
-        "pendiente_7d": round(pendiente_7d,4),
-        "sma_7": round(sma7,3) if sma7 else "",
-        "sma_21": round(sma21,3) if sma21 else "",
+        # dominancias / variaciones / aceleracion / pendientes -> guardamos con formato Decimal 8 decimales
+        "dominancia_btc": fmt_decimal(dom_btc, places=8),
+        "dominancia_usdt": fmt_decimal(dom_usdt, places=8),
+        "dominancia_usdc": fmt_decimal(dom_usdc, places=8),
+        "dominancia_stable": fmt_decimal(dom_stable, places=8),
+        "variacion_24h": fmt_decimal(variacion_24h, places=8),
+        "aceleracion": fmt_decimal(aceleracion, places=8),
+        "pendiente_7d": fmt_decimal(pendiente_7d, places=8),
+        "sma_7": fmt_decimal(sma7, places=8) if sma7 is not None else "",
+        "sma_21": fmt_decimal(sma21, places=8) if sma21 is not None else "",
         "score_diario": int(round((100-presion_def)/2 + 50)),
         "score_semanal": int(weekly_score),
         "presion_defensiva": int(presion_def),
