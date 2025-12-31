@@ -53,7 +53,7 @@ def safe_get(url, timeout=15, params=None, headers=None):
     return r
 
 def parse_float(x):
-    """Parsea strings numéricos con formatos europeos y signos % → devuelve float o None."""
+    """Parsea strings numéricos con formatos europeos y signos % -> devuelve float o None."""
     if x is None or x == "":
         return None
     try:
@@ -103,11 +103,23 @@ def to_decimal(x):
         except Exception:
             return None
 
+def fmt_decimal_sheet(x, places=8):
+    """
+    Devuelve string compatible con Google Sheets ES/AR:
+    - coma decimal
+    - sin separador de miles
+    - `places` decimales
+    """
+    d = to_decimal(x)
+    if d is None:
+        return ""
+    quant = Decimal('1e-{p}'.format(p=places))
+    d = d.quantize(quant, rounding=ROUND_HALF_UP)
+    # formato con punto decimal -> reemplazar por coma para Sheets regional
+    return format(d, "f").replace(".", ",")
+
 def fmt_decimal(x, places=8):
-    """
-    Devuelve una string con `places` decimales usando Decimal y rounding HALF_UP.
-    Si x es None devuelve "".
-    """
+    """Devuelve string con punto decimal (por si se necesita elsewhere)."""
     d = to_decimal(x)
     if d is None:
         return ""
@@ -130,7 +142,6 @@ def normalize_percentage(x):
     # heurística: valores absurdamente grandes -> dividir por 1e8
     if d > Decimal("1000"):
         return d / Decimal("100000000")
-    # si está en [0, 1000] lo dejamos tal cual
     return d
 
 # -----------------------
@@ -471,8 +482,7 @@ def motor_decision_anticipada(historico, actual):
     weekly = int(actual.get("score_semanal") or 50)
 
     # base probabilidades (heurístico, combinatorio)
-    prob_bull = 0; neutral = 0
-    prob_neutral = 0; prob_bear = 0
+    prob_bull = 0; prob_neutral = 0; prob_bear = 0
     if presion >= 75:
         prob_bear += 50
     elif presion >= 60:
@@ -615,19 +625,11 @@ def telegram_summary(payload, last_action=None, last_escenario=None):
     lines.append(f"Presión defensiva: {payload.get('presion_defensiva')}")
 
     # Línea 2: dominancia stable + variación 24h
-    var_24h = payload.get("variacion_24h")
-    # var_24h puede ser string (fmt_decimal) o número -> intentar convertir
-    try:
-        var_24h_val = float(str(var_24h)) if var_24h != "" else None
-    except:
-        var_24h_val = None
+    var_24h_val = parse_float(payload.get("variacion_24h"))
     sign = "+" if isinstance(var_24h_val, (int, float)) and var_24h_val > 0 else ""
 
     dom_stable_raw = payload.get("dominancia_stable")
-    try:
-        dom_stable_val = float(str(dom_stable_raw)) if dom_stable_raw not in (None, "") else None
-    except:
-        dom_stable_val = None
+    dom_stable_val = parse_float(dom_stable_raw)
 
     if isinstance(dom_stable_val, (int, float)) and dom_stable_val < 8:
         dom_text = f"<span style='color:green'><b>{dom_stable_raw}%</b></span>"
@@ -698,7 +700,6 @@ def main(run_backtest_flag=False):
         if v is not None:
             try: dom_stable += float(v)
             except: pass
-    # dom_stable mantiene su precisión en float para cálculos internos
 
     # fetch BTC series & 24h change
     btc_chart = fetch_btc_market_chart_days(days=HIST_LIMIT+10)
@@ -802,16 +803,16 @@ def main(run_backtest_flag=False):
     payload = {
         "fecha": fecha,
         "total_market_cap": int(round(total_mcap)) if total_mcap else "",
-        # normalizamos y formateamos con 8 decimales para persistencia
-        "dominancia_btc": fmt_decimal(normalize_percentage(dom_btc), places=8),
-        "dominancia_usdt": fmt_decimal(normalize_percentage(dom_usdt), places=8),
-        "dominancia_usdc": fmt_decimal(normalize_percentage(dom_usdc), places=8),
-        "dominancia_stable": fmt_decimal(normalize_percentage(dom_stable), places=8),
-        "variacion_24h": fmt_decimal(variacion_24h, places=8),
-        "aceleracion": fmt_decimal(aceleracion, places=8),
-        "pendiente_7d": fmt_decimal(pendiente_7d, places=8),
-        "sma_7": fmt_decimal(sma7, places=8) if sma7 is not None else "",
-        "sma_21": fmt_decimal(sma21, places=8) if sma21 is not None else "",
+        # normalizamos y formateamos con coma decimal (compatible Sheet regional) para persistencia
+        "dominancia_btc": fmt_decimal_sheet(normalize_percentage(dom_btc), places=8),
+        "dominancia_usdt": fmt_decimal_sheet(normalize_percentage(dom_usdt), places=8),
+        "dominancia_usdc": fmt_decimal_sheet(normalize_percentage(dom_usdc), places=8),
+        "dominancia_stable": fmt_decimal_sheet(normalize_percentage(dom_stable), places=8),
+        "variacion_24h": fmt_decimal_sheet(variacion_24h, places=8),
+        "aceleracion": fmt_decimal_sheet(aceleracion, places=8),
+        "pendiente_7d": fmt_decimal_sheet(pendiente_7d, places=8),
+        "sma_7": fmt_decimal_sheet(sma7, places=8) if sma7 is not None else "",
+        "sma_21": fmt_decimal_sheet(sma21, places=8) if sma21 is not None else "",
         "score_diario": int(round((100-presion_def)/2 + 50)),
         "score_semanal": int(weekly_score),
         "presion_defensiva": int(presion_def),
