@@ -314,7 +314,7 @@ def decidir_accion_matrix(presion_def, probs, regime_guess, weekly_score, persis
 def parse_exposure(exposicion_str):
     if not exposicion_str:
         return None
-    s = str(exposicion_str).replace("%","").strip()
+    s = str(exposicion_str).replace("%","\").strip()
     if "-" in s:
         try:
             a,b = s.split("-")
@@ -561,16 +561,39 @@ def motor_decision_anticipada(historico, actual):
         expos = "40-60%"
         sesgo = "ALCISTA"
 
+    # -------------------------
+    # Mejorada: lógica Stop / TP
+    # - Stop: niveles de alerta (early/warning/critical)
+    # - TP: umbrales más sensibles para señales de take-profit
+    # -------------------------
     stop_loss = False
     take_profit = False
 
+    # Critical stop (original)
     if presion >= STOP_PRESION:
         stop_loss = True
+
+    # Warning stop: activar antes (umbral más sensible)
+    if presion >= 65:
+        stop_loss = True
+
+    # Aceleración moderada + presión moderada -> alerta temprana
+    if accel > 0.8 and presion > 55:
+        stop_loss = True
+
+    # Presión + aceleración fuerte -> confirma stop
     if accel > 1.2 and presion > 60:
         stop_loss = True
 
+    # Take profit: detectar subida rápida de presión relativa o condiciones de lock-gains
     last_pres = historico[-1].get("presion_defensiva") if historico and historico[-1].get("presion_defensiva") is not None else presion
-    if presion - (last_pres or presion) >= TP_PRESION_DELTA:
+
+    # Si la presión subió >=10 puntos desde el último registro -> posible take profit
+    if presion - (last_pres or presion) >= 10:
+        take_profit = True
+
+    # Condición adicional: presión en zona alta + aceleración positiva
+    if presion >= 60 and accel > 0:
         take_profit = True
 
     comentario = f"Escenario {escenario}. Probabilidades BULL {probs['bull']}% | NEUT {probs['neutral']}% | BEAR {probs['bear']}%. "
@@ -849,7 +872,8 @@ def main(run_backtest_flag=False):
             r_check = safe_get(SHEETBEST_URL)
             sheet_rows = r_check.json()
             last_rows = sheet_rows[-5:] if len(sheet_rows) >= 5 else sheet_rows
-            today_found = any(str(row.get("fecha","")).startswith(fecha) for row in last_rows)
+            today_found = any(str(row.get("fecha","")).
+            startswith(fecha) for row in last_rows)
             last_row = last_rows[-1] if last_rows else None
             last_action = (last_row.get("accion_sugerida") if last_row else "") or (last_row.get("accion") if last_row else "")
             last_escenario = last_row.get("escenario_probable") if last_row else ""
