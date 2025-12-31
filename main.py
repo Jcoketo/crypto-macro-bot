@@ -314,7 +314,7 @@ def decidir_accion_matrix(presion_def, probs, regime_guess, weekly_score, persis
 def parse_exposure(exposicion_str):
     if not exposicion_str:
         return None
-    s = str(exposicion_str).replace("%","\").strip()
+    s = str(exposicion_str).replace("%", "").strip()
     if "-" in s:
         try:
             a,b = s.split("-")
