@@ -32,10 +32,24 @@ def safe_float(v):
     try:
         if v is None:
             return None
+
         if isinstance(v, str):
-            v = v.replace("%", "").replace(",", "").strip()
+            v = v.strip()
+
+            # elimina %
+            v = v.replace("%", "")
+
+            # formato europeo: 3.060.676.807.950,00
+            if "," in v and "." in v:
+                v = v.replace(".", "").replace(",", ".")
+
+            # solo coma decimal: 57,42
+            elif "," in v:
+                v = v.replace(",", ".")
+
         return float(v)
-    except:
+
+    except Exception:
         return None
 
 
