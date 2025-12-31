@@ -5,9 +5,9 @@ from datetime import datetime
 # =========================
 # CONFIG
 # =========================
-SHEETBEST_URL = os.getenv("SHEETBEST_URL")            
-TELEGRAM_BOT_TOKEN = os.getenv("TENDENCIAS_TOKEN")       
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")      
+SHEETBEST_URL = os.getenv("SHEETBEST_URL")
+TELEGRAM_BOT_TOKEN = os.getenv("TENDENCIAS_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
 
@@ -24,26 +24,24 @@ def send_telegram(message: str):
     }
     requests.post(url, json=payload, timeout=10)
 
-
 # =========================
 # HELPERS
 # =========================
 def safe_float(v):
+    """
+    Convierte valores del Sheet a float manteniendo
+    TODA la precisión disponible.
+    """
     try:
         if v is None:
             return None
 
         if isinstance(v, str):
-            v = v.strip()
+            v = v.strip().replace("%", "")
 
-            # elimina %
-            v = v.replace("%", "")
-
-            # formato europeo: 3.060.676.807.950,00
+            # formato europeo
             if "," in v and "." in v:
                 v = v.replace(".", "").replace(",", ".")
-
-            # solo coma decimal: 57,42
             elif "," in v:
                 v = v.replace(",", ".")
 
@@ -53,11 +51,14 @@ def safe_float(v):
         return None
 
 
-def signed(v):
+def signed(v, decimals=4):
+    """
+    Formato con signo y redondeo SOLO visual
+    """
     if v is None:
         return ""
-    return f"+{round(v,2)}" if v > 0 else f"{round(v,2)}"
-
+    fmt = f"{{:+.{decimals}f}}"
+    return fmt.format(v)
 
 # =========================
 # DATA FETCH
@@ -74,7 +75,6 @@ def fetch_coingecko():
     r.raise_for_status()
     return r.json()["data"]
 
-
 # =========================
 # MAIN LOGIC
 # =========================
@@ -83,7 +83,9 @@ def run_macro_snapshot():
     last = fetch_last_sheet_row()
     cg = fetch_coingecko()
 
-    # --- ACTUAL DATA ---
+    # =========================
+    # ACTUAL DATA (FULL PRECISION)
+    # =========================
     market_cap = safe_float(cg["total_market_cap"]["usd"])
     dom_btc = safe_float(cg["market_cap_percentage"]["btc"])
 
@@ -96,18 +98,22 @@ def run_macro_snapshot():
     dom_stable = 0.0
     for k in stable_keys:
         v = cg["market_cap_percentage"].get(k)
-        if v:
+        if v is not None:
             dom_stable += float(v)
 
-    # --- PREVIOUS DATA ---
+    # =========================
+    # PREVIOUS DATA (SHEET)
+    # =========================
     prev_mcap = safe_float(last.get("total_market_cap"))
     prev_dom_btc = safe_float(last.get("dominancia_btc"))
     prev_dom_stable = safe_float(last.get("dominancia_stable"))
 
-    # --- VARIATIONS ---
-    var_mcap = ((market_cap - prev_mcap) / prev_mcap * 100) if prev_mcap else 0
-    var_dom_btc = dom_btc - prev_dom_btc if prev_dom_btc else 0
-    var_dom_stable = dom_stable - prev_dom_stable if prev_dom_stable else 0
+    # =========================
+    # VARIATIONS (NO ROUNDING)
+    # =========================
+    var_mcap = ((market_cap - prev_mcap) / prev_mcap * 100) if prev_mcap else 0.0
+    var_dom_btc = dom_btc - prev_dom_btc if prev_dom_btc else 0.0
+    var_dom_stable = dom_stable - prev_dom_stable if prev_dom_stable else 0.0
 
     # =========================
     # MESSAGE BUILD
@@ -117,7 +123,7 @@ def run_macro_snapshot():
     lines.append("")
 
     # --- MARKET CAP ---
-    lines.append(f"<b>Market Cap en USD:</b> {int(market_cap)}")
+    lines.append(f"<b>Market Cap en USD:</b> {int(market_cap):,}")
     lines.append(f"Variación del Market Cap: {signed(var_mcap)}%")
 
     if var_mcap > 0:
@@ -125,7 +131,7 @@ def run_macro_snapshot():
     lines.append("")
 
     # --- BTC DOM ---
-    lines.append(f"<b>Dominación de BTC:</b> {round(dom_btc,2)}%")
+    lines.append(f"<b>Dominación de BTC:</b> {dom_btc:.4f}%")
     lines.append(f"Variación Dom. BTC: {signed(var_dom_btc)}%")
 
     if var_dom_btc > 0:
@@ -133,10 +139,9 @@ def run_macro_snapshot():
     lines.append("")
 
     # --- STABLE DOM ---
+    dom_stable_txt = f"{dom_stable:.4f}%"
     if dom_stable > 9:
-        dom_stable_txt = f"🚨 <span style='color:red'><b>{round(dom_stable,2)}%</b></span>"
-    else:
-        dom_stable_txt = f"{round(dom_stable,2)}%"
+        dom_stable_txt = f"🚨 <span style='color:red'><b>{dom_stable_txt}</b></span>"
 
     lines.append(f"<b>Dominación de Stables:</b> {dom_stable_txt}")
     lines.append(f"Variación Cap. Stable: {signed(var_dom_stable)}%")
@@ -145,41 +150,35 @@ def run_macro_snapshot():
         lines.append("🟡 Ingresa Dinero en Stable Coin")
         if var_dom_stable > 1:
             lines.append("⚠️ Posible riesgo")
-   
+
     # =========================
-    # DEBUG – DATOS LEÍDOS
+    # DEBUG – FULL PRECISION
     # =========================
     lines.append("")
     lines.append("🧪 <b>DEBUG – DATOS LEÍDOS</b>")
 
-    # --- Sheet ---
     lines.append("📄 <b>Desde Google Sheet:</b>")
     lines.append(f"Prev Market Cap: {prev_mcap}")
     lines.append(f"Prev Dom BTC: {prev_dom_btc}")
     lines.append(f"Prev Dom Stable: {prev_dom_stable}")
 
-    # --- CoinGecko ---
     lines.append("")
     lines.append("🌐 <b>Desde CoinGecko:</b>")
     lines.append(f"Market Cap actual: {market_cap}")
     lines.append(f"Dom BTC actual: {dom_btc}")
-    lines.append(f"Dom Stable actual: {round(dom_stable,2)}")
+    lines.append(f"Dom Stable actual: {dom_stable}")
 
-    # --- Variaciones calculadas ---
     lines.append("")
     lines.append("📐 <b>Variaciones calculadas:</b>")
     lines.append(f"Var Market Cap: {var_mcap}")
     lines.append(f"Var Dom BTC: {var_dom_btc}")
     lines.append(f"Var Dom Stable: {var_dom_stable}")
 
-    ################ FIN DE PRUEBA
-    ##############################
-    
-    
+    # =========================
+    # SEND
+    # =========================
     message = "\n".join(lines)
-
     send_telegram(message)
-
 
 # =========================
 # ENTRYPOINT
