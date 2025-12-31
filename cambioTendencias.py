@@ -132,34 +132,34 @@ def run_macro_snapshot():
         if var_dom_stable > 1:
             lines.append("⚠️ Posible riesgo")
    
-# =========================
-# DEBUG – DATOS LEÍDOS
-# =========================
-lines.append("")
-lines.append("🧪 <b>DEBUG – DATOS LEÍDOS</b>")
+    # =========================
+    # DEBUG – DATOS LEÍDOS
+    # =========================
+    lines.append("")
+    lines.append("🧪 <b>DEBUG – DATOS LEÍDOS</b>")
 
-# --- Sheet ---
-lines.append("📄 <b>Desde Google Sheet:</b>")
-lines.append(f"Prev Market Cap: {prev_mcap}")
-lines.append(f"Prev Dom BTC: {prev_dom_btc}")
-lines.append(f"Prev Dom Stable: {prev_dom_stable}")
+    # --- Sheet ---
+    lines.append("📄 <b>Desde Google Sheet:</b>")
+    lines.append(f"Prev Market Cap: {prev_mcap}")
+    lines.append(f"Prev Dom BTC: {prev_dom_btc}")
+    lines.append(f"Prev Dom Stable: {prev_dom_stable}")
 
-# --- CoinGecko ---
-lines.append("")
-lines.append("🌐 <b>Desde CoinGecko:</b>")
-lines.append(f"Market Cap actual: {market_cap}")
-lines.append(f"Dom BTC actual: {dom_btc}")
-lines.append(f"Dom Stable actual: {round(dom_stable,2)}")
+    # --- CoinGecko ---
+    lines.append("")
+    lines.append("🌐 <b>Desde CoinGecko:</b>")
+    lines.append(f"Market Cap actual: {market_cap}")
+    lines.append(f"Dom BTC actual: {dom_btc}")
+    lines.append(f"Dom Stable actual: {round(dom_stable,2)}")
 
-# --- Variaciones calculadas ---
-lines.append("")
-lines.append("📐 <b>Variaciones calculadas:</b>")
-lines.append(f"Var Market Cap: {var_mcap}")
-lines.append(f"Var Dom BTC: {var_dom_btc}")
-lines.append(f"Var Dom Stable: {var_dom_stable}")
+    # --- Variaciones calculadas ---
+    lines.append("")
+    lines.append("📐 <b>Variaciones calculadas:</b>")
+    lines.append(f"Var Market Cap: {var_mcap}")
+    lines.append(f"Var Dom BTC: {var_dom_btc}")
+    lines.append(f"Var Dom Stable: {var_dom_stable}")
 
-################ FIN DE PRUEBA
-##############################
+    ################ FIN DE PRUEBA
+    ##############################
     
     
     message = "\n".join(lines)
