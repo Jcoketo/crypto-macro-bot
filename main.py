@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # main.py - v2.4-stops-decision + Telegram siempre (envía resumen en cada run)
+# Versión de producción: envío Telegram centralizado (único por ejecución)
 # Ejecutar: python main.py
 # Backtest (opcional): python main.py --backtest
 
@@ -835,32 +836,11 @@ def main(run_backtest_flag=False):
         "version_modelo": MODEL_VERSION
     }
 
-    # --- ENVÍO TELEGRAM SIEMPRE (inmediatamente después de construir `payload`) ---
-    last_action_ctx = None
-    last_escenario_ctx = None
-    try:
-        if SHEETBEST_URL:
-            r_tmp = safe_get(SHEETBEST_URL)
-            rows_tmp = r_tmp.json()
-            last_row_tmp = rows_tmp[-1] if rows_tmp else None
-            if last_row_tmp:
-                last_action_ctx = (last_row_tmp.get("accion_sugerida") or last_row_tmp.get("accion") or "").strip()
-                last_escenario_ctx = (last_row_tmp.get("escenario_probable") or "").strip()
-    except Exception as e:
-        print("Warning: no se pudo leer último registro para contexto de Telegram:", e)
+    # --- No enviar aquí: centralizamos el envío al final para evitar duplicados ---
 
-    try:
-        msg = telegram_summary(payload, last_action=last_action_ctx, last_escenario=last_escenario_ctx)
-        sent = send_telegram(msg)
-        if sent:
-            print("✅ Telegram: notificación enviada (run).")
-        else:
-            print("ℹ️ Telegram: no configurado o envío omitido.")
-    except Exception as e:
-        print("Error enviando Telegram (no crítico):", e)
-    # --- FIN ENVÍO TELEGRAM SIEMPRE ---
-
-    # 11) Post / avoid duplicates / telegram (post-send)
+    # 11) Post / avoid duplicates / NO TELEGRAM AQUÍ
+    last_action = ""
+    last_escenario = ""
     try:
         if not SHEETBEST_URL:
             print("SHEETBEST_URL no configurada. Payload:")
@@ -880,17 +860,49 @@ def main(run_backtest_flag=False):
             if today_found:
                 print("Ya existe registro para hoy. No duplicamos.")
                 if action_changed or scenario_changed:
-                    send_telegram(telegram_summary(payload, last_action=last_action, last_escenario=last_escenario))
+                    print("Cambio detectado respecto al último registro (no se envía aquí).")
                 else:
                     print("Sin cambios relevantes.")
             else:
                 post_to_sheet(payload)
                 print("Registro subido.")
-                if presion_def >= 70 or payload["escenario_probable"] == "BAJISTA" or payload["accion_sugerida"].startswith("VENDER"):
-                    send_telegram(telegram_summary(payload, last_action=last_action, last_escenario=last_escenario))
+                # ya no enviamos Telegram aquí; el envío se hace al final (1 único envío)
     except Exception as e:
         print("Error chequeo/posteo:", e)
         print(payload)
+
+    # ===============================
+    # TELEGRAM – ENVÍO ÚNICO Y SIEMPRE
+    # ===============================
+    try:
+        last_action_ctx = ""
+        last_escenario_ctx = ""
+
+        # re-leemos la última fila para tener contexto actualizado (incluye posible post anterior)
+        if SHEETBEST_URL:
+            try:
+                r_last = safe_get(SHEETBEST_URL)
+                rows_last = r_last.json()
+                if rows_last:
+                    prev = rows_last[-1]
+                    last_action_ctx = (prev.get("accion_sugerida") or prev.get("accion") or "").strip()
+                    last_escenario_ctx = (prev.get("escenario_probable") or "").strip()
+            except Exception:
+                # si falla la re-lectura, usamos los valores previos calculados
+                last_action_ctx = last_action or ""
+                last_escenario_ctx = last_escenario or ""
+        else:
+            last_action_ctx = last_action or ""
+            last_escenario_ctx = last_escenario or ""
+
+        msg = telegram_summary(payload, last_action=last_action_ctx, last_escenario=last_escenario_ctx)
+        sent = send_telegram(msg)
+        if sent:
+            print("✅ Telegram enviado (único, always-on).")
+        else:
+            print("ℹ️ Telegram: no configurado o envío omitido.")
+    except Exception as e:
+        print("Error enviando Telegram final:", e)
 
     # Optional backtest run (for research)
     if run_backtest_flag:
