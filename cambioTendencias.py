@@ -6,7 +6,7 @@ from datetime import datetime
 # CONFIG
 # =========================
 SHEETBEST_URL = os.getenv("SHEETBEST_URL")            
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")       
+TELEGRAM_BOT_TOKEN = os.getenv("TENDENCIAS_TOKEN")       
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")      
 
 COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
